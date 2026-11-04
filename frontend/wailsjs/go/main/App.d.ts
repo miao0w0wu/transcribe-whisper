@@ -4,6 +4,10 @@ import {main} from '../models';
 
 export function CreateTask(arg1:main.CreateTaskInput):Promise<main.Task>;
 
+export function ExportSubtitles(arg1:string,arg2:string):Promise<string>;
+
 export function GetDashboard():Promise<main.Dashboard>;
+
+export function ListSubtitles(arg1:string):Promise<Array<main.SubtitleSegment>>;
 
 export function StartTask(arg1:string):Promise<main.Task>;

@@ -80,6 +80,30 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SubtitleSegment {
+	    id: string;
+	    sequence: number;
+	    start: number;
+	    end: number;
+	    sourceText: string;
+	    translatedText: string;
+	    translationStatus: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SubtitleSegment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.sequence = source["sequence"];
+	        this.start = source["start"];
+	        this.end = source["end"];
+	        this.sourceText = source["sourceText"];
+	        this.translatedText = source["translatedText"];
+	        this.translationStatus = source["translationStatus"];
+	    }
+	}
 
 }
 

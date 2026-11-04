@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCreateTaskRequiresSourceFile(t *testing.T) {
 	app := NewApp()
@@ -15,6 +18,7 @@ func TestCreateAndStartTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
+
 	if task.Status != "created" || task.Name != "episode" {
 		t.Fatalf("unexpected task: %+v", task)
 	}
@@ -25,5 +29,21 @@ func TestCreateAndStartTask(t *testing.T) {
 	}
 	if started.Status != "transcribing" || started.Progress != 8 {
 		t.Fatalf("unexpected started task: %+v", started)
+	}
+}
+
+func TestExportSubtitles(t *testing.T) {
+	app := NewApp()
+	task, err := app.CreateTask(CreateTaskInput{SourceFile: `D:\Media\episode.mp4`})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	content, err := app.ExportSubtitles(task.ID, "srt")
+	if err != nil {
+		t.Fatalf("export subtitles: %v", err)
+	}
+	expected := "1\n00:00:12,350 --> 00:00:17,820\n欢迎来到本教程。"
+	if !strings.HasPrefix(content, expected) {
+		t.Fatalf("unexpected SRT content: %q", content)
 	}
 }

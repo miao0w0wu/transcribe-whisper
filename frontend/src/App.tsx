@@ -1,6 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useState } from 'react';
 import './App.css';
-import { CreateTask, GetDashboard, StartTask } from '../wailsjs/go/main/App';
+import { CreateTask, ExportSubtitles, GetDashboard, StartTask } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 
 type View = 'workspace' | 'new-task' | 'settings' | 'models';
@@ -73,7 +73,24 @@ function App() {
       <main className="content">
         <header className="topbar"><div className="breadcrumbs">项目 <span>/</span> <b>{view === 'workspace' ? 'Britney_Speech_2026' : view === 'new-task' ? '新建任务' : view === 'models' ? '模型管理' : '翻译设置'}</b></div><div className="top-actions"><button className="icon-button">?</button><div className="avatar">Z</div></div></header>
         {error && <div className="app-error">⚠ {error}</div>}
-        {view === 'workspace' && <Workspace task={activeTask} onNewTask={() => setView('new-task')} />}
+        {view === 'workspace' && <Workspace task={activeTask} onNewTask={() => setView('new-task')} onExport={async () => {
+          if (!activeTask) {
+            setError('当前没有可导出的任务。');
+            return;
+          }
+          try {
+            const content = await ExportSubtitles(activeTask.id, 'srt');
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${activeTask.name}.srt`;
+            link.click();
+            URL.revokeObjectURL(url);
+          } catch {
+            setError('字幕导出失败，请稍后重试。');
+          }
+        }} />}
         {view === 'new-task' && <NewTask fileName={fileName} onFileChange={selectFile} onCancel={() => setView('workspace')} onCreate={async () => {
           try {
             const task = await CreateTask({ sourceFile: fileName, sourceLanguage: 'auto', targetLanguage: 'zh-CN', outputFormat: 'srt' });
@@ -91,11 +108,11 @@ function App() {
   );
 }
 
-function Workspace({ task, onNewTask }: { task: main.Task | null; onNewTask: () => void }) {
+function Workspace({ task, onNewTask, onExport }: { task: main.Task | null; onNewTask: () => void; onExport: () => void }) {
   const translated = useMemo(() => segments.filter((segment) => segment.status === 'translated').length, []);
   const taskName = task?.name || 'Britney_Speech_2026';
   return <div className="page workspace-page">
-    <div className="page-heading"><div><div className="eyebrow">当前任务 · {task ? task.currentStage : '演示数据'}</div><h1>{taskName}</h1><p className="muted">{task?.sourceFile || 'Britney_Speech_2026.mp4'} <span className="separator">·</span> 42:18 <span className="separator">·</span> 英语 → 简体中文</p></div><div className="heading-actions"><button className="button secondary">重新翻译</button><button className="button primary">导出字幕 <span>↓</span></button></div></div>
+    <div className="page-heading"><div><div className="eyebrow">当前任务 · {task ? task.currentStage : '演示数据'}</div><h1>{taskName}</h1><p className="muted">{task?.sourceFile || 'Britney_Speech_2026.mp4'} <span className="separator">·</span> 42:18 <span className="separator">·</span> 英语 → 简体中文</p></div><div className="heading-actions"><button className="button secondary">重新翻译</button><button className="button primary" onClick={onExport}>导出字幕 <span>↓</span></button></div></div>
     <div className="progress-card"><div className="progress-top"><div><strong>阶段 4 / 6</strong><span>翻译中</span></div><strong className="progress-value">68%</strong></div><div className="progress-track"><div style={{ width: '68%' }} /></div><div className="progress-bottom"><span>分段 4 / 7 · 已返回 46 条</span><span>剩余约 1 分 12 秒</span><div className="progress-controls"><button>Ⅱ 暂停</button><button>× 取消</button></div></div></div>
     <div className="workspace-grid"><section className="subtitle-card"><div className="card-header"><div><h2>字幕</h2><span className="card-subtitle">已加载 7 / 186 条 · 点击行可跳转播放</span></div><div className="subtitle-tools"><label className="search"><span>⌕</span><input placeholder="搜索字幕文本" /></label><button className="filter active">全部 186</button><button className="filter">已译 {translated + 150}</button><button className="filter">待译 32</button></div></div><div className="subtitle-table"><div className="table-head"><span>时间轴</span><span>原文 · 英语</span><span>译文 · 简体中文</span><span>状态</span></div>{segments.map((segment) => <div className="subtitle-row" key={segment.id}><div className="timecode"><span>{segment.start}</span><span>{segment.end}</span></div><div className="source-text">{segment.source}</div><div className={segment.translation ? 'translation-text' : 'translation-text empty'}>{segment.translation || '等待翻译…'}</div><div className={`segment-status ${segment.status}`}>{segment.status === 'translated' ? '已译' : segment.status === 'translating' ? '翻译中' : '待译'}</div></div>)}</div><div className="card-footer"><div className="audio-player"><button className="play">▶</button><div className="waveform">{Array.from({ length: 42 }, (_, i) => <i key={i} style={{ height: `${10 + ((i * 17) % 25)}px` }} />)}</div><span>00:12:35 <em>/ 00:42:18</em></span><button className="speed">1.0×</button></div></div></section><aside className="task-details card"><div className="card-header"><div><h2>任务信息</h2><span className="card-subtitle">详情</span></div><button className="more">•••</button></div><div className="preview"><div className="preview-screen"><span>▶</span></div><div className="preview-caption"><strong>预 览</strong><span>1080p · H.264</span></div></div><Detail label="识别模型" value="cohere-transcribe-03" /><Detail label="翻译服务" value="Ollama · qwen2.5:7b" /><Detail label="内容模式" value="标准 standard" /><Detail label="音频分段" value="4 / 7 段 · 每段 10 分钟" /><div className="validation"><span>✓</span><div><strong>批量翻译校验通过</strong><small>46 / 46 条返回 · ID 无重复 · JSON 可解析</small></div></div><div className="detail-stats"><div><strong>失败</strong><span>0 条</span></div><div><strong>自动重试</strong><span>1 次</span></div><div><strong>缓存命中</strong><span>32 条</span></div></div></aside></div>
   </div>;

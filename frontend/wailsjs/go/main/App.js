@@ -6,8 +6,16 @@ export function CreateTask(arg1) {
   return window['go']['main']['App']['CreateTask'](arg1);
 }
 
+export function ExportSubtitles(arg1, arg2) {
+  return window['go']['main']['App']['ExportSubtitles'](arg1, arg2);
+}
+
 export function GetDashboard() {
   return window['go']['main']['App']['GetDashboard']();
+}
+
+export function ListSubtitles(arg1) {
+  return window['go']['main']['App']['ListSubtitles'](arg1);
 }
 
 export function StartTask(arg1) {
