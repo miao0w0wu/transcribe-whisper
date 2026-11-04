@@ -12,7 +12,7 @@
 → 工作台校对 → SRT / VTT / TXT / JSON / 双语 SRT 导出
 ```
 
-- 工作台：任务进度、字幕表格（搜索、筛选、行内编辑）、状态徽章，操作按状态启用（暂停 / 恢复 / 取消 / 重试 / 重新翻译 / 翻译待译条目）。
+- 工作台：任务进度、字幕表格（搜索、筛选、行内编辑）、状态徽章，操作按状态启用（暂停 / 恢复 / 取消 / 重试 / 重新翻译 / 翻译待译条目）；导出区下方可将字幕压制进视频另存为 MP4。
 - 任务队列：全部任务的进度与生命周期管理，点击进入工作台；应用启动时自动把上次异常退出残留的任务标记为失败。
 - 新建任务：系统文件对话框（`PickFile`）、已安装模型下拉、语言 / 设备 / 精度、是否翻译与 Provider 选择、输出格式。
 - 翻译设置：Ollama（本地，默认）与 OpenAI-compatible（云端，需隐私确认）、翻译语气、术语表（`源术语=译法`，每行一条）、API Key（只显示是否已配置）、连接测试。
@@ -27,8 +27,9 @@
 - `go test ./...` 全部通过（含 service 状态机、暂停 / 取消 / 重试、翻译批处理的 100+ 用例；`-race` 通过）。
 - 真实链路端到端：TTS 生成语音 → FFmpeg 提取 → faster-whisper tiny 识别出 3 条时间轴准确的中英字幕 → Ollama qwen2.5:7b 翻译 3/3 条成功 → 五种格式导出全部非空。
 - 术语表实测生效：`pipeline` 按术语表译为“流水线”，`timestamps` 译为“时间戳”。
+- 字幕压制实测出片：自动发现带 libass 的 `ffmpeg 8.1.2-full`，直接调用与穿过 service 层两条路径均产出 6.00 秒 MP4（67290 / 68430 字节）。
 - `wails build` 打包成功（`build/bin/transcribe-whisper.exe`）。
-- 前端调用的 24 个 Wails Binding 与自动生成绑定一一对齐，无缺失方法。
+- 前端调用的 25 个 Wails Binding 与自动生成绑定一一对齐，无缺失方法。
 
 ## 产品链路
 
@@ -57,7 +58,7 @@ llama-server / Ollama / 云端 API 翻译
 | 桌面宿主 | Go + Wails v2 |
 | 前端 | React + TypeScript + Vite |
 | 数据库 | SQLite（`modernc.org/sqlite`，纯 Go） |
-| 音视频 | FFmpeg（探测 / 提取 / 压制能力检测） |
+| 音视频 | FFmpeg（探测 / 提取 / 压制能力检测；自动优先选带 `subtitles` 滤镜的构建） |
 | ASR | faster-whisper（JSON Lines 子进程协议）；FunASR 协议已实现 |
 | 翻译 | Ollama、OpenAI-compatible API（`/chat/completions`） |
 
@@ -114,6 +115,9 @@ $env:TRANSCRIBE_E2E_TRANSLATE='1'
 $env:TRANSCRIBE_E2E_OLLAMA_MODEL='qwen2.5:7b'
 go test -run TestRealFullPipeline -v ./
 
+# 字幕压制（自动发现带 libass 的 FFmpeg，无需环境变量）
+go test -run TestRealBurnSubtitle -v ./
+
 # 模型下载冒烟（联网，走 hf-mirror）
 $env:MODELMANAGER_NET_TEST='1'
 go test -run TestNetworkSmoke -v ./internal/modelmanager/
@@ -122,7 +126,7 @@ go test -run TestNetworkSmoke -v ./internal/modelmanager/
 ## 后续实施顺序（建议）
 
 1. FunASR 引擎已在后端实现（脚本、协议、测试），接入模型管理并在 UI 暴露。
-2. 字幕压制（`Burn`）已实现并检测 `subtitles` 滤镜：当前机器的 FFmpeg 未编译 libass，需换用带 libass 的构建才能出片。
-3. 长音频分段与断点续跑（当前单进程识别，依赖 faster-whisper 自身的分段）。
-4. 翻译设置里补充术语表导入 / 导出与按任务覆盖。
+2. 长音频分段与断点续跑（当前单进程识别，依赖 faster-whisper 自身的分段）。
+3. 翻译设置里补充术语表导入 / 导出与按任务覆盖。
+4. 压制参数（字体、位置、描边）尚未做成设置项，目前字号可在工作台调整，边距固定 40。
 5. CI 与 Windows 安装包验证。

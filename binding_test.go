@@ -294,3 +294,36 @@ func TestUserConfigDirAvailable(t *testing.T) {
 		t.Fatalf("无法获取用户配置目录: %v", err)
 	}
 }
+
+// TestBindingBurnSubtitlesWithoutWailsContext 验证无 Wails 上下文时的压制入口行为：
+// 显式给输出路径可以直接压制（由后端能力决定成败），空路径则必须报中文错误而不是 panic。
+func TestBindingBurnSubtitlesWithoutWailsContext(t *testing.T) {
+	app := newFrontendApp(t)
+	source := writeTempMedia(t, t.TempDir(), "burn.mp4")
+	task, err := app.CreateTask(CreateTaskInput{SourceFile: source})
+	if err != nil {
+		t.Fatalf("创建任务失败: %v", err)
+	}
+	// 没有 Wails 上下文时，空输出路径无法弹对话框。
+	if _, err := app.BurnSubtitles(task.ID, BurnSubtitlesInput{}); err == nil {
+		t.Fatal("无 Wails 上下文且未指定输出路径时应返回错误")
+	} else if !strings.Contains(err.Error(), "不支持文件对话框") {
+		t.Fatalf("错误信息应说明缺少文件对话框，实际: %v", err)
+	}
+	// 任务还没有字幕，带输出路径也必须被拒绝。
+	output := filepath.Join(t.TempDir(), "out.mp4")
+	if _, err := app.BurnSubtitles(task.ID, BurnSubtitlesInput{OutputPath: output}); err == nil {
+		t.Fatal("没有字幕时压制应失败")
+	} else if !strings.Contains(err.Error(), "还没有字幕") {
+		t.Fatalf("错误信息应说明缺少字幕，实际: %v", err)
+	}
+}
+
+// TestBindingBurnSubtitlesRejectsUnknownTask 确认任务不存在时返回错误而不是空路径。
+func TestBindingBurnSubtitlesRejectsUnknownTask(t *testing.T) {
+	app := newFrontendApp(t)
+	output := filepath.Join(t.TempDir(), "out.mp4")
+	if _, err := app.BurnSubtitles("not-a-task", BurnSubtitlesInput{OutputPath: output}); err == nil {
+		t.Fatal("任务不存在时应返回错误")
+	}
+}

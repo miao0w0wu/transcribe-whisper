@@ -128,6 +128,15 @@ export interface SettingsPatch {
   glossaryText?: string;
 }
 
+/** 字幕压制入参 */
+export interface BurnSubtitlesInput {
+  /** 留空时由后端弹出系统「另存为」对话框 */
+  outputPath: string;
+  fontName: string;
+  fontSize: number;
+  marginV: number;
+}
+
 /** 运行环境探测结果 */
 export interface EnvironmentStatus {
   ffmpegPath: string;

@@ -27,6 +27,7 @@
 | 包 | 职责 |
 |---|---|
 | `internal/media` | FFmpeg 探测（版本 / `subtitles`、`drawtext` 滤镜能力）、ffprobe 元数据、16kHz wav 提取、字幕压制（`Burn`） |
+| `ffmpeg_select.go`（根包） | FFmpeg 自动发现：显式配置 > PATH 与常见安装目录探测（优先支持压制的构建）> 启动时限时深度扫描升级，成功后写回设置 |
 | `internal/asr` | faster-whisper / FunASR 的 JSON Lines 子进程协议，Python 脚本内嵌（`internal/asr/assets/*.py`）并释放到缓存目录 |
 | `internal/translation` | `Provider` 统一接口、Ollama（`/api/chat`）与 OpenAI-compatible（`/chat/completions`）、批处理流水线（分批、指数退避重试、缺失补批、SHA-256 缓存、术语表注入与后置校验、`BatchError` 聚合） |
 | `internal/modelmanager` | faster-whisper 五档模型清单（实测字节数）、hf-mirror→HuggingFace 多镜像降级、HTTP Range 断点续传（`.part`）、进度节流、取消、删除保护 |
@@ -34,7 +35,7 @@
 | `internal/exporter` | SRT / VTT / TXT / JSON / 双语 SRT 纯函数导出器 |
 | `internal/service` | 任务调度：并发槽位队列、阶段推进（提取→识别→翻译）、暂停 / 恢复 / 取消 / 重试 / 重新翻译、Wails 事件推送 |
 
-### Wails Binding（24 个，已与前端一一对齐）
+### Wails Binding（25 个，已与前端一一对齐）
 
 | 方法 | 用途 |
 |---|---|
@@ -46,6 +47,7 @@
 | `DeleteTask` | 级联删除任务与字幕 |
 | `ListSubtitles / UpdateSubtitles` | 字幕读写（完整性校验保留） |
 | `ExportSubtitles / SaveExport` | 五格式导出；后者弹系统保存框写盘 |
+| `BurnSubtitles(taskID, input)` | 把字幕压制进源视频；`outputPath` 为空时弹系统保存框，用户取消返回空串 |
 | `ListModels / DownloadModel / CancelModelDownload / RemoveModel` | 模型管理（未知模型拒绝、下载中去重） |
 | `OpenModelFolder` | 打开缓存目录 |
 | `GetSettings / UpdateSettings` | 设置读写（API Key 只返回布尔；新增 `translationStyle`、`glossaryText`） |
@@ -80,7 +82,7 @@ created → queued → extracting → transcribing → translating → completed
 ### 前端
 
 - `src/views/`：Workspace（进度卡 + 字幕表 + 详情）、NewTask、TaskQueue、SettingsView、ModelsView，公共组件在 `views/components/`。
-- `src/lib/api.ts` 封装 24 个 Binding；`lib/events.ts` 订阅两个进度事件并正确取消；`lib/runtime.ts` 在纯浏览器下降级为只读演示模式（显示中文提示，不崩溃）。
+- `src/lib/api.ts` 封装 25 个 Binding；`lib/events.ts` 订阅两个进度事件并正确取消；`lib/runtime.ts` 在纯浏览器下降级为只读演示模式（显示中文提示，不崩溃）。
 - 新建任务优先走 `PickFile`（系统对话框拿绝对路径），浏览器环境回退 file input + 提示补全路径。
 - 模型未安装时下拉为空并给出「先到模型管理下载」的中文引导。
 
@@ -110,6 +112,8 @@ wails build            # build/bin/transcribe-whisper.exe
 
 - `TestRealPipeline`：识别链路（本机 tiny 模型 + WhisperJAV Python 实测通过）。
 - `TestRealFullPipeline`：识别 + Ollama 翻译 + 五格式导出（qwen2.5:7b 实测 3/3 条翻译成功、术语表生效）。
+- `TestRealBurnSubtitle`：真实调用 `media.Burn` 压制字幕（自动发现带 libass 的 FFmpeg，实测出片 68430 字节 / 6.00 秒）。
+- `TestRealBurnThroughService`：穿过 `service.Queue.BurnSubtitles` 的完整压制链路（实测 67290 字节 / 6.00 秒，同时校验译文优先与原文回退）。
 - `ModelManager` 联网冒烟：`MODELMANAGER_NET_TEST=1`，hf-mirror 实测 76MB 下载、进度节流正常。
 
 ## 5. 重要教训（改代码前先读）
@@ -119,17 +123,18 @@ wails build            # build/bin/transcribe-whisper.exe
 3. **faster-whisper 加载本地模型目录**需要 `config.json`、`model.bin`、`tokenizer.json`、`vocabulary.txt`（large-v3 是 `vocabulary.json`）**全部齐全**，否则报 `Cannot load the vocabulary`。所以清单里四个文件都是 Required。
 4. **测试必须隔离用户目录**：`NewApp()` 会把数据目录指向系统临时目录（`shutdown` 时清理）。不要在 `NewApp()` 里回退到 `os.UserConfigDir()`。
 5. **本机网络**：`huggingface.co` 不可达，`hf-mirror.com` 可达；模型下载默认镜像顺序必须是 hf-mirror 优先。
-6. **本机 FFmpeg 7.1.1 未编译 libass**：无 `subtitles` 滤镜。`Burn` 会如实报错，不会假装成功。压制功能要换带 libass 的构建。
-7. `frontend/wailsjs/` 是 `wails build` 自动生成的；前端手工补齐过的部分已全部被生成结果覆盖并验证（见 `binding_test.go` 的 24 方法对齐测试思路）。
+6. **FFmpeg 构建差异与本机路径**：本机在用的 `ffmpeg 7.1.1`（WhisperJAV）**没有** `subtitles` 滤镜，而 `ffmpeg 8.1.2-full`（`D:\AI\video tools\jasna-windows-0.10.0\tools\ffmpeg.exe`）有。`ffmpeg_select.go` 已实现自动发现：显式配置优先 > PATH 与常见目录探测（优先支持压制的构建）> 启动时限时深度扫描升级，成功后写回 `settings.FFmpegPath`。
+7. **滤镜图转义只能单级**：`subtitles='C\:/path/x.srt'` 正确，两级（`subtitles='C\\:/...'`）实测 `exit=-22 Invalid argument`。改 `escapeFilterValue` 前先用命令行 A/B 验证，别靠推测。
+8. `frontend/wailsjs/` 是 `wails build` 自动生成的；前端手工补齐过的部分已全部被生成结果覆盖并验证（见 `binding_test.go` 的 Binding 对齐测试思路）。
 
 ## 6. 当前实现限制（接手后可继续）
 
 1. FunASR：协议、脚本、引擎实现与测试都在（`internal/asr/funasr.go`），但模型管理清单不含 FunASR 模型、UI 也未暴露（引擎下拉只有 faster-whisper）。
-2. 字幕压制需要带 libass 的 FFmpeg 构建（见上）。
+2. 字幕压制链路已打通：`media.Burn` → `service.Queue.BurnSubtitles` → `App.BurnSubtitles` → 工作台按钮。启动时自动发现带 libass 的 FFmpeg，实测出片（`TestRealBurnSubtitle`、`TestRealBurnThroughService`）。**尚未做的是压制外观设置**：字号可在界面调，边距固定 40、字体随 libass 默认（`BurnOptions` 已支持 `FontName`/`FontSize`/`MarginV`，只是没进设置页）。
 3. 长音频是单次识别；`UpsertSegments`/阶段字段已为断点续跑预留，但暂停后恢复会重跑当前阶段（识别结果保留在库里，不会丢）。
 4. 翻译温度、批大小、上下文长度等高级参数尚未暴露到设置页（后端已有默认值：批 20 条、重试 3 次、并发 1、温度 0.3）。
 5. 术语表只支持全局一份；未做按任务覆盖与导入导出。
-6. `SaveExport` / `PickFile` 依赖 Wails 运行时，浏览器演示模式不可用（已禁用按钮并给出中文提示）。
+6. `SaveExport` / `PickFile` / `BurnSubtitles` 的另存为路径依赖 Wails 运行时，浏览器演示模式不可用（已禁用按钮并给出中文提示）。
 7. 无 CI；`go telemetry` 目录在本机偶发权限提示，不影响构建结果。
 
 ## 7. 接手时建议先做的检查

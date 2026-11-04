@@ -589,18 +589,26 @@ func TestBurnArgsEscapesWindowsPath(t *testing.T) {
 	if vf == "" {
 		t.Fatalf("未找到 -vf 参数：%v", args)
 	}
-	// 期望形如：subtitles='C\\:/视频/字幕 v2\\\'s.srt':force_style='...'
+	// 期望形如：subtitles='C\:/视频/字幕 v2\'s.srt':force_style='...'
+	//
+	// 转义级别以真实 FFmpeg 实测为准（gyan 8.1 full，见 TestRealBurnSubtitle）：
+	// 滤镜串整体已用单引号包住，内部只需一级转义。早期实现的两级转义会
+	// 生成 C\\:/，实测让滤镜图解析失败，FFmpeg 报出误导性的
+	// “Error opening output file ... Invalid argument”。
 	if !strings.HasPrefix(vf, "subtitles='") {
 		t.Fatalf("路径应放在单引号内：%s", vf)
 	}
-	if !strings.Contains(vf, `C\\:/`) {
+	if !strings.Contains(vf, `C\:/`) {
 		t.Fatalf("盘符冒号必须转义：%s", vf)
+	}
+	if strings.Contains(vf, `C\\`) {
+		t.Fatalf("引号内不应出现两级转义（实测会让 FFmpeg 报 Invalid argument）：%s", vf)
 	}
 	if strings.Contains(vf, `C:\`) {
 		t.Fatalf("Windows 反斜杠应换成斜杠：%s", vf)
 	}
-	if !strings.Contains(vf, `\\\'s`) {
-		t.Fatalf("单引号必须两级转义：%s", vf)
+	if !strings.Contains(vf, `\'s`) {
+		t.Fatalf("单引号必须转义：%s", vf)
 	}
 	if !strings.Contains(vf, "视频/字幕 v2") {
 		t.Fatalf("中文路径不应被破坏：%s", vf)
@@ -609,14 +617,14 @@ func TestBurnArgsEscapesWindowsPath(t *testing.T) {
 
 func TestEscapeFilterPath(t *testing.T) {
 	got := escapeFilterPath(`C:\a b\字's.srt`)
-	if !strings.Contains(got, `C\\:/`) {
+	if !strings.Contains(got, `C\:/`) {
 		t.Fatalf("冒号未转义：%s", got)
 	}
 	if !strings.Contains(got, "a b") {
 		t.Fatalf("空格不应被改动：%s", got)
 	}
-	if strings.Contains(got, `\a`) && !strings.Contains(got, `\\a`) {
-		t.Fatalf("反斜杠未转义：%s", got)
+	if strings.Contains(got, `\\`) {
+		t.Fatalf("单级转义下不应出现成对反斜杠（两级转义实测不可用）：%s", got)
 	}
 }
 

@@ -118,6 +118,8 @@
 .export-bar-info span{display:block;font-size:10px;color:#8b95a9;margin-top:5px}
 .export-bar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .export-bar .select{width:150px}
+.burn-font{display:flex;align-items:center;gap:6px;font-size:10px;color:#929bad}
+.burn-font-input{width:64px;height:31px;padding:0 8px}
 .detail-path{display:inline-block;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
 .preview-screen{flex-direction:column;gap:6px}
 .preview-screen small{font-size:10px;opacity:.7}

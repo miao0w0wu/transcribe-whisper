@@ -1,5 +1,23 @@
 export namespace main {
 	
+	export class BurnSubtitlesInput {
+	    outputPath: string;
+	    fontName: string;
+	    fontSize: number;
+	    marginV: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BurnSubtitlesInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.outputPath = source["outputPath"];
+	        this.fontName = source["fontName"];
+	        this.fontSize = source["fontSize"];
+	        this.marginV = source["marginV"];
+	    }
+	}
 	export class CreateTaskInput {
 	    sourceFile: string;
 	    sourceLanguage: string;

@@ -123,6 +123,15 @@ type SettingsPatch struct {
 	GlossaryText *string `json:"glossaryText"`
 }
 
+// BurnSubtitlesInput 是字幕压制的入参。
+type BurnSubtitlesInput struct {
+	// OutputPath 为空时由后端在工作目录下自动生成文件名。
+	OutputPath string `json:"outputPath"`
+	FontName   string `json:"fontName"`
+	FontSize   int    `json:"fontSize"`
+	MarginV    int    `json:"marginV"`
+}
+
 // EnvironmentStatus 汇总运行环境探测结果。
 type EnvironmentStatus struct {
 	FFmpegPath     string `json:"ffmpegPath"`

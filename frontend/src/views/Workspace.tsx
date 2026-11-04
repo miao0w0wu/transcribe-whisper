@@ -71,6 +71,9 @@ export function Workspace({ taskId, demo, progressEvent, onNewTask, onOpenQueue,
   const [exportFormat, setExportFormat] = useState<ExportFormat>('srt');
   const [exportHint, setExportHint] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [burning, setBurning] = useState(false);
+  const [burnHint, setBurnHint] = useState('');
+  const [burnFontSize, setBurnFontSize] = useState('28');
 
   const loadSubtitles = useCallback(
     async (id: string) => {
@@ -117,6 +120,7 @@ export function Workspace({ taskId, demo, progressEvent, onNewTask, onOpenQueue,
   useEffect(() => {
     setSaveHint('');
     setExportHint('');
+    setBurnHint('');
     if (task?.id) {
       setExportFormat((task.outputFormat as ExportFormat) || 'srt');
       void loadSubtitles(task.id);
@@ -247,6 +251,27 @@ export function Workspace({ taskId, demo, progressEvent, onNewTask, onOpenQueue,
     }
   };
 
+  const handleBurn = async () => {
+    if (!task || demo) return;
+    setBurning(true);
+    setError('');
+    setBurnHint('');
+    try {
+      // 输出路径留空：由后端弹出系统「另存为」对话框选择位置。
+      const target = await api.burnSubtitles(task.id, {
+        outputPath: '',
+        fontName: '',
+        fontSize: Number.parseInt(burnFontSize, 10) || 0,
+        marginV: 40,
+      });
+      setBurnHint(target ? `已压制完成：${target}` : '已取消压制。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '压制字幕失败，请稍后重试。');
+    } finally {
+      setBurning(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="page">
@@ -351,6 +376,40 @@ export function Workspace({ taskId, demo, progressEvent, onNewTask, onOpenQueue,
         </div>
       </div>
       {exportHint ? <div className="inline-hint">{exportHint}</div> : null}
+
+      <div className="export-bar card">
+        <div className="export-bar-info">
+          <strong>压制字幕到视频</strong>
+          <span>
+            把当前字幕烧进源视频另存为 MP4。需要带 subtitles 滤镜的 FFmpeg，启动时会自动挑选并可在「模型管理」里确认。
+          </span>
+        </div>
+        <div className="export-bar-actions">
+          <label className="burn-font">
+            <span>字号</span>
+            <input
+              className="text-input burn-font-input"
+              type="number"
+              min={12}
+              max={72}
+              value={burnFontSize}
+              onChange={(event) => setBurnFontSize(event.target.value)}
+              disabled={demo || burning}
+            />
+          </label>
+          {demo ? <span className="progress-controls-hint">演示模式不可压制</span> : null}
+          <button
+            type="button"
+            className="button primary"
+            disabled={demo || burning || task.subtitleCount === 0}
+            title={task.subtitleCount === 0 ? '需要先完成识别才能压制' : '选择保存位置并压制字幕'}
+            onClick={() => void handleBurn()}
+          >
+            {burning ? '压制中…' : '压制并另存为…'}
+          </button>
+        </div>
+      </div>
+      {burnHint ? <div className="inline-hint">{burnHint}</div> : null}
 
       <div className="workspace-grid">
         <SubtitleTable

@@ -3,6 +3,7 @@
 // 这样纯浏览器（无 Wails 运行时）下的演示模式、错误文案统一处理都集中在一处。
 import { invoke } from './runtime';
 import type {
+  BurnSubtitlesInput,
   CreateTaskInput,
   Dashboard,
   EnvironmentStatus,
@@ -16,6 +17,7 @@ import type {
 
 export { ApiError, BackendUnavailableError, DEMO_MODE_NOTICE, isWailsRuntime } from './runtime';
 export type {
+  BurnSubtitlesInput,
   CreateTaskInput,
   Dashboard,
   EnvironmentStatus,
@@ -104,6 +106,14 @@ export function exportSubtitles(taskID: string, format: ExportFormat): Promise<s
 /** 让后端弹出系统保存对话框并写入文件，返回写入的路径 */
 export function saveExport(taskID: string, format: ExportFormat): Promise<string> {
   return invoke<string>('SaveExport', '另存为', [taskID, format]);
+}
+
+/**
+ * 把字幕压制进视频，返回产物绝对路径。
+ * 后端会在 outputPath 为空时弹出系统「另存为」对话框；用户取消返回空串。
+ */
+export function burnSubtitles(taskID: string, input: BurnSubtitlesInput): Promise<string> {
+  return invoke<string>('BurnSubtitles', '压制字幕', [taskID, input]);
 }
 
 /** 模型列表 */

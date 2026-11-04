@@ -137,14 +137,19 @@ func burnArgs(video, subtitle, output string, req BurnRequest) []string {
 }
 
 // escapeFilterPath 把 Windows 路径转成 subtitles 滤镜可接受的写法：
-// 反斜杠换成正斜杠，再按 FFmpeg 滤镜规则转义特殊字符。
+// 反斜杠换成正斜杠，再做一次滤镜转义。
+//
+// 转义级别说明：burnArgs 里把整个滤镜串用单引号包住后才交给 FFmpeg，
+// 引号内的路径只需要一层转义（盘符 C: -> C\:）。实测（gyan 8.1 full）
+// 两级转义产生的 C\\: 会让滤镜图解析失败，FFmpeg 反而报出误导性的
+// “Error opening output file ... Invalid argument”，因此这里只转义一层。
 func escapeFilterPath(path string) string {
 	p := strings.ReplaceAll(path, "\\", "/")
 	return escapeFilterValue(p)
 }
 
-// escapeFilterValue 按 FFmpeg 滤镜参数的两级转义规则处理：
-// 第一级（选项值）转义 \、'、:、,、[、]、;，第二级（滤镜图）再转义 \ 与 '。
+// escapeFilterValue 按 FFmpeg 滤镜选项值的单级转义规则处理特殊字符。
+// 调用方负责用单引号包住整个滤镜串：引号内再叠加转义是错误的。
 func escapeFilterValue(s string) string {
 	var b strings.Builder
 	b.Grow(len(s) + 8)
@@ -155,16 +160,7 @@ func escapeFilterValue(s string) string {
 		}
 		b.WriteRune(r)
 	}
-	once := b.String()
-	var out strings.Builder
-	out.Grow(len(once) + 8)
-	for _, r := range once {
-		if r == '\\' || r == '\'' {
-			out.WriteByte('\\')
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
+	return b.String()
 }
 
 // escapeStyleValue 处理 force_style 内部的取值，避免逗号和冒号破坏样式串。

@@ -51,8 +51,10 @@ type TranslationJob struct {
 
 // Deps 是 Queue 的下游依赖集合，测试时可逐个替换为假实现。
 type Deps struct {
-	Store      *repository.Store
-	Media      MediaExtractor
+	Store *repository.Store
+	Media MediaExtractor
+	// Burner 负责把字幕烧进视频；为 nil 时压制功能不可用。
+	Burner     media.Burner
 	Engine     asr.Engine
 	Resolver   ModelResolver
 	Translator TranslatorFactory

@@ -15,6 +15,7 @@ import (
 
 	"transcribe-whisper/internal/modelmanager"
 	"transcribe-whisper/internal/repository"
+	"transcribe-whisper/internal/service"
 )
 
 // supportedEngines 与 supportedProviders 是合法取值集合。
@@ -697,6 +698,55 @@ func (a *App) GetEnvironment() EnvironmentStatus {
 		}
 	}
 	return status
+}
+
+// BurnSubtitles 把任务字幕压制进源视频，返回产物绝对路径。
+//
+// 未指定 OutputPath 时弹系统「另存为」对话框；用户取消则返回空路径与 nil 错误。
+func (a *App) BurnSubtitles(taskID string, input BurnSubtitlesInput) (string, error) {
+	queue, err := a.queueHandle()
+	if err != nil {
+		return "", err
+	}
+	taskID = strings.TrimSpace(taskID)
+	outputPath := strings.TrimSpace(input.OutputPath)
+	if outputPath == "" {
+		if a.ctx == nil {
+			return "", errors.New("当前环境不支持文件对话框，请显式填写输出路径")
+		}
+		store, storeErr := a.storeHandle()
+		if storeErr != nil {
+			return "", storeErr
+		}
+		rec, recErr := store.GetTask(a.contextOrBackground(), taskID)
+		if recErr != nil {
+			return "", recErr
+		}
+		base := strings.TrimSpace(rec.Name)
+		if base == "" {
+			base = "subtitled"
+		}
+		// 输出必须是 mp4 容器：burnArgs 用的 movflags=+faststart 只对 mp4/mov 生效。
+		dialogPath, dialogErr := wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
+			Title:           "保存压制后的视频",
+			DefaultFilename: base + "-subtitled.mp4",
+			Filters: []wailsruntime.FileFilter{
+				{DisplayName: "MP4 视频", Pattern: "*.mp4"},
+			},
+		})
+		if dialogErr != nil {
+			return "", dialogErr
+		}
+		outputPath = strings.TrimSpace(dialogPath)
+		if outputPath == "" {
+			return "", nil
+		}
+	}
+	return queue.BurnSubtitles(a.contextOrBackground(), taskID, outputPath, service.BurnOptions{
+		FontName: strings.TrimSpace(input.FontName),
+		FontSize: input.FontSize,
+		MarginV:  input.MarginV,
+	})
 }
 
 // detectGPU 读取显卡型号。

@@ -41,6 +41,9 @@ type App struct {
 	settings repository.SettingsRecord
 	// tempDataDir 表示数据目录是测试临时目录，shutdown 时要清理。
 	tempDataDir bool
+	// deepUpgradeEnabled 表示允许在装配时做磁盘深度扫描升级 FFmpeg。
+	// 只有真实应用启动（startup）开启；测试与 e2e 关闭，避免拖慢启动。
+	deepUpgradeEnabled bool
 }
 
 // database 包装连接句柄，保留旧版本 openDatabase 语义以便测试。
@@ -69,6 +72,7 @@ func NewApp() *App {
 // startup 由 Wails 调用，负责打开真实数据库并装配依赖。
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.deepUpgradeEnabled = true
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		log.Printf("无法定位应用配置目录: %v", err)
@@ -161,10 +165,25 @@ func (a *App) bootstrap(ctx context.Context) {
 		settings.ModelDir = modelDir
 	}
 
-	ffmpeg, err := media.New(settings.FFmpegPath)
-	if err != nil {
-		log.Printf("未找到 FFmpeg: %v", err)
-		ffmpeg, _ = media.New("ffmpeg")
+	// FFmpeg 选择：用户显式指定的路径最优先；未指定时自动在 PATH 与常见
+	// 安装位置里挑能力最强的构建（字幕压制需要 subtitles 滤镜，很多精简
+	// 构建没有编译 libass，会导致压制功能不可用）。quick 选择拿不到压制
+	// 能力、且允许深度扫描时，再限深扫一次磁盘，把便携工具包自带的完整
+	// 构建找出来（真实启动才开启，测试与 e2e 不被拖慢）。
+	selectedFFmpeg := selectFFmpeg(ctx, settings.FFmpegPath)
+	if selectedFFmpeg != nil && a.deepUpgradeEnabled {
+		if upgraded := upgradeBurnCapability(ctx, selectedFFmpeg, &settings); upgraded != nil {
+			selectedFFmpeg = upgraded
+			_ = store.SaveSettings(ctx, settings)
+		}
+	}
+	if selectedFFmpeg == nil {
+		log.Printf("未找到可用的 FFmpeg，媒体相关功能将不可用；可在设置中手动指定路径")
+	}
+	if selectedFFmpeg != nil && strings.TrimSpace(settings.FFmpegPath) == "" {
+		// 自动发现的结果写回设置，让设置页展示实际使用的路径；
+		// 用户手动配置过的路径不动。
+		settings.FFmpegPath = selectedFFmpeg.Path()
 	}
 
 	engine := asr.NewFasterWhisperEngine()
@@ -179,7 +198,8 @@ func (a *App) bootstrap(ctx context.Context) {
 
 	queue := service.NewQueue(service.Deps{
 		Store:       store,
-		Media:       ffmpeg,
+		Media:       selectedFFmpeg,
+		Burner:      selectedFFmpeg,
 		Engine:      engine,
 		Resolver:    service.ManagerAdapter{Manager: models},
 		Translator:  translationFactory{settings: func() repository.SettingsRecord { return a.currentSettings() }},
@@ -199,7 +219,7 @@ func (a *App) bootstrap(ctx context.Context) {
 	a.mu.Lock()
 	a.settings = settings
 	a.store = store
-	a.media = ffmpeg
+	a.media = selectedFFmpeg
 	a.engine = engine
 	a.models = models
 	a.queue = queue
