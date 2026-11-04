@@ -11,6 +11,7 @@
 - 翻译设置：Ollama / OpenAI-compatible Provider、语言风格、内容模式和高级参数。
 - 模型管理：Hugging Face / 国内镜像、已安装模型、下载状态和 GPU 检测。
 - Go 任务 API：读取任务面板、创建任务、校验源文件、启动识别状态。
+- SQLite 任务持久化：任务创建、状态更新和应用重启恢复均写入本地数据库。
 
 界面采用设计稿中的深色侧栏、浅色画布、蓝紫主色、卡片化信息层级。任务创建和状态读取已通过 Wails Binding 接入；字幕、翻译与模型数据仍待接入持久化服务。
 
@@ -40,7 +41,7 @@ llama-server / Ollama / 云端 API 翻译
 |---|---|
 | 桌面宿主 | Go + Wails v2 |
 | 前端 | React + TypeScript + Vite |
-| 数据库 | SQLite（`modernc.org/sqlite`，计划接入） |
+| 数据库 | SQLite（`modernc.org/sqlite`，纯 Go） |
 | 音视频 | FFmpeg |
 | ASR | faster-whisper / FunASR |
 | 翻译 | llama-server、Ollama、OpenAI-compatible API |
@@ -60,7 +61,7 @@ transcribe-whisper/
 └─ README.md
 ```
 
-后续服务层按领域拆分为 `ProjectService`、`JobService`、`SubtitleService`、`TranslationService`、`ModelService`、`SettingsService` 和 `ExportService`。前端只调用这些领域接口，不直接操作文件系统、数据库或系统进程。
+当前任务数据库默认位于 Windows 用户配置目录下的 `transcribe-whisper/transcribe-whisper.db`。后续服务层按领域拆分为 `ProjectService`、`JobService`、`SubtitleService`、`TranslationService`、`ModelService`、`SettingsService` 和 `ExportService`。前端只调用这些领域接口，不直接操作文件系统、数据库或系统进程。
 
 ## 开发与构建
 

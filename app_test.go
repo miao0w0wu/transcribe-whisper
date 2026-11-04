@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -45,5 +47,31 @@ func TestExportSubtitles(t *testing.T) {
 	expected := "1\n00:00:12,350 --> 00:00:17,820\n欢迎来到本教程。"
 	if !strings.HasPrefix(content, expected) {
 		t.Fatalf("unexpected SRT content: %q", content)
+	}
+}
+
+func TestTasksPersistAcrossAppInstances(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "tasks.db")
+	first := NewApp()
+	defer first.shutdown(context.Background())
+	if err := first.openDatabase(databasePath); err != nil {
+		t.Fatalf("open first database: %v", err)
+	}
+	task, err := first.CreateTask(CreateTaskInput{SourceFile: `D:\Media\persisted.mp4`})
+	if err != nil {
+		t.Fatalf("create persisted task: %v", err)
+	}
+	if _, err := first.StartTask(task.ID); err != nil {
+		t.Fatalf("start persisted task: %v", err)
+	}
+
+	second := NewApp()
+	defer second.shutdown(context.Background())
+	if err := second.openDatabase(databasePath); err != nil {
+		t.Fatalf("open second database: %v", err)
+	}
+	dashboard := second.GetDashboard()
+	if dashboard.ActiveTask == nil || dashboard.ActiveTask.ID != task.ID || dashboard.ActiveTask.Status != "transcribing" {
+		t.Fatalf("task was not restored: %+v", dashboard)
 	}
 }

@@ -2,21 +2,26 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	_ "modernc.org/sqlite"
 )
 
 type App struct {
 	ctx   context.Context
 	mu    sync.RWMutex
 	tasks map[string]*Task
+	db    *sql.DB
 }
 
 type Task struct {
@@ -40,26 +45,104 @@ type CreateTaskInput struct {
 }
 
 type Dashboard struct {
-	ActiveTask *Task  `json:"activeTask"`
+	ActiveTask *Task   `json:"activeTask"`
 	Tasks      []*Task `json:"tasks"`
 }
 
 type SubtitleSegment struct {
-	ID          string  `json:"id"`
-	Sequence    int     `json:"sequence"`
-	Start       float64 `json:"start"`
-	End         float64 `json:"end"`
-	SourceText  string  `json:"sourceText"`
-	Translated  string  `json:"translatedText"`
-	Status      string  `json:"translationStatus"`
+	ID         string  `json:"id"`
+	Sequence   int     `json:"sequence"`
+	Start      float64 `json:"start"`
+	End        float64 `json:"end"`
+	SourceText string  `json:"sourceText"`
+	Translated string  `json:"translatedText"`
+	Status     string  `json:"translationStatus"`
 }
 
 func NewApp() *App {
-	return &App{tasks: make(map[string]*Task)}
+	app := &App{tasks: make(map[string]*Task)}
+	if err := app.openDatabase(":memory:"); err != nil {
+		panic(err)
+	}
+	return app
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		log.Printf("cannot locate application config directory: %v", err)
+		return
+	}
+	databasePath := filepath.Join(configDir, "transcribe-whisper", "transcribe-whisper.db")
+	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
+		log.Printf("cannot create application data directory: %v", err)
+		return
+	}
+	if err := a.openDatabase(databasePath); err != nil {
+		log.Printf("cannot open task database: %v", err)
+		return
+	}
+}
+
+func (a *App) shutdown(ctx context.Context) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.db != nil {
+		if err := a.db.Close(); err != nil {
+			log.Printf("close task database: %v", err)
+		}
+		a.db = nil
+	}
+}
+
+func (a *App) openDatabase(path string) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS tasks (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		source_file TEXT NOT NULL,
+		source_language TEXT NOT NULL,
+		target_language TEXT NOT NULL,
+		status TEXT NOT NULL,
+		progress INTEGER NOT NULL DEFAULT 0,
+		current_stage TEXT NOT NULL,
+		subtitle_count INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL
+	)`); err != nil {
+		_ = db.Close()
+		return err
+	}
+	rows, err := db.Query(`SELECT id, name, source_file, source_language, target_language, status, progress, current_stage, subtitle_count, created_at FROM tasks ORDER BY created_at DESC`)
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
+	defer rows.Close()
+	loaded := make(map[string]*Task)
+	for rows.Next() {
+		task := &Task{}
+		if err := rows.Scan(&task.ID, &task.Name, &task.SourceFile, &task.SourceLanguage, &task.TargetLanguage, &task.Status, &task.Progress, &task.CurrentStage, &task.SubtitleCount, &task.CreatedAt); err != nil {
+			_ = db.Close()
+			return err
+		}
+		loaded[task.ID] = task
+	}
+	if err := rows.Err(); err != nil {
+		_ = db.Close()
+		return err
+	}
+	a.mu.Lock()
+	if a.db != nil && a.db != db {
+		_ = a.db.Close()
+	}
+	a.db = db
+	a.tasks = loaded
+	a.mu.Unlock()
+	return nil
 }
 
 func (a *App) GetDashboard() Dashboard {
@@ -112,6 +195,12 @@ func (a *App) CreateTask(input CreateTaskInput) (*Task, error) {
 
 	a.mu.Lock()
 	a.tasks[task.ID] = task
+	if _, err := a.db.Exec(`INSERT INTO tasks (id, name, source_file, source_language, target_language, status, progress, current_stage, subtitle_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.ID, task.Name, task.SourceFile, task.SourceLanguage, task.TargetLanguage, task.Status, task.Progress, task.CurrentStage, task.SubtitleCount, task.CreatedAt); err != nil {
+		delete(a.tasks, task.ID)
+		a.mu.Unlock()
+		return nil, fmt.Errorf("save task: %w", err)
+	}
 	a.mu.Unlock()
 	return task, nil
 }
@@ -127,6 +216,9 @@ func (a *App) StartTask(taskID string) (*Task, error) {
 	task.Status = "transcribing"
 	task.CurrentStage = "正在识别"
 	task.Progress = 8
+	if _, err := a.db.Exec(`UPDATE tasks SET status = ?, progress = ?, current_stage = ? WHERE id = ?`, task.Status, task.Progress, task.CurrentStage, task.ID); err != nil {
+		return nil, fmt.Errorf("save task status: %w", err)
+	}
 	copy := *task
 	return &copy, nil
 }
