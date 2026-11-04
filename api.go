@@ -13,9 +13,11 @@ import (
 	"github.com/google/uuid"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"transcribe-whisper/internal/asr"
 	"transcribe-whisper/internal/modelmanager"
 	"transcribe-whisper/internal/repository"
 	"transcribe-whisper/internal/service"
+	"transcribe-whisper/internal/translation"
 )
 
 // supportedEngines 与 supportedProviders 是合法取值集合。
@@ -400,6 +402,15 @@ func (a *App) ListModels() []ModelInfo {
 			LocalPath:   localPath,
 			Description: entry.Description,
 			Files:       requiredFiles(entry),
+			Engine:      entry.Engine,
+			Custom:      entry.Custom,
+			Gated:       entry.Gated,
+			Local:       entry.Custom,
+			InstalledOK: ok,
+		}
+		// 本地模型即使目录暂时不可用也要展示出来，方便用户发现「目录被移动了」。
+		if entry.Custom && !ok {
+			info.LocalPath = models.LocalDir(entry.ID)
 		}
 		if models.IsDownloading(entry.ID) {
 			info.Installing = true
@@ -418,13 +429,20 @@ func (a *App) DownloadModel(modelID string) (*ModelInfo, error) {
 	if models == nil {
 		return nil, errors.New("模型管理器未就绪")
 	}
-	normalized := modelmanager.NormalizeModelID(strings.TrimSpace(modelID))
-	if normalized == "" {
-		return nil, errors.New("模型标识无效")
-	}
-	// 只允许下载内置清单里的模型，避免任意仓库名被直接拼进下载 URL。
-	if _, ok := models.Find(normalized); !ok {
+	// 只允许下载清单里的模型，避免任意仓库名被直接拼进下载 URL。
+	// 注意：先用原始入参匹配（清单比对会同时看 ID 与 Repo），归一化结果只
+	// 用来统一后续的进度键 —— 对 cohere 这类 ID 与仓库名不同的模型，
+	// 直接用归一化值匹配会匹配不到。
+	entry, found := models.Find(strings.TrimSpace(modelID))
+	if !found {
 		return nil, errors.New("未知的模型：" + modelID + "，可在模型管理页查看可用模型")
+	}
+	normalized := entry.ID
+	if entry.Custom {
+		return nil, errors.New("本地模型不需要下载，直接在任务里选择即可")
+	}
+	if entry.Gated && !hasHuggingFaceToken(a.currentSettings()) {
+		return nil, errors.New("模型 " + entry.Name + " 在 Hugging Face 上是受限仓库，需要先在设置里配置 HF 访问令牌")
 	}
 	if models.IsDownloading(normalized) {
 		return nil, errors.New("该模型正在下载中，请等待完成或先取消")
@@ -472,6 +490,9 @@ func (a *App) CancelModelDownload(modelID string) error {
 }
 
 // RemoveModel 删除本地模型。
+//
+// 自选的本地模型不会被删除：它只是用户磁盘上的一个目录，删掉别人的东西太
+// 危险。这种情况只把它从清单里移除。
 func (a *App) RemoveModel(modelID string) error {
 	a.mu.RLock()
 	models := a.models
@@ -479,7 +500,162 @@ func (a *App) RemoveModel(modelID string) error {
 	if models == nil {
 		return errors.New("模型管理器未就绪")
 	}
-	return models.Remove(a.contextOrBackground(), modelmanager.NormalizeModelID(strings.TrimSpace(modelID)))
+	entry, ok := models.Find(strings.TrimSpace(modelID))
+	if !ok {
+		return errors.New("未知的模型：" + modelID)
+	}
+	if entry.Custom {
+		return a.unregisterLocalModel(entry.ID)
+	}
+	return models.Remove(a.contextForModels(), entry.ID)
+}
+
+// AddLocalModel 把用户选择的本地目录注册为识别模型。
+//
+// 会自动识别格式（CTranslate2 / transformers）并校验关键文件是否齐全，
+// 校验失败时返回中文原因，不会把一个加载不了的空目录塞进清单。
+func (a *App) AddLocalModel(input AddLocalModelInput) (*ModelInfo, error) {
+	a.mu.RLock()
+	models := a.models
+	a.mu.RUnlock()
+	if models == nil {
+		return nil, errors.New("模型管理器未就绪")
+	}
+	dir := strings.TrimSpace(input.Directory)
+	if dir == "" {
+		return nil, errors.New("请先选择本地模型目录")
+	}
+	entry, err := models.AddLocalModel(strings.TrimSpace(input.ID), dir)
+	if err != nil {
+		return nil, err
+	}
+	// 记进设置，重启后自动恢复。
+	if err := a.persistLocalModel(entry.ID, models.LocalDir(entry.ID)); err != nil {
+		return nil, err
+	}
+	installed, _ := models.Installed(a.contextForModels())
+	return &ModelInfo{
+		ID:          entry.ID,
+		Name:        entry.Name,
+		Repo:        entry.Repo,
+		SizeBytes:   entry.SizeBytes,
+		Installed:   true,
+		LocalPath:   models.LocalDir(entry.ID),
+		Description: entry.Description,
+		Engine:      entry.Engine,
+		Custom:      true,
+		Local:       true,
+		Files:       entry.Required,
+		InstalledOK: installed[entry.ID] != "",
+	}, nil
+}
+
+// AddRepoModel 用自定义仓库地址新增一个可下载模型。
+//
+// repo 支持仓库名（org/name）或完整 Hugging Face 链接；后端会读取仓库的
+// 文件列表生成清单，随后就可以像内置模型一样下载。
+func (a *App) AddRepoModel(input AddRepoModelInput) (*ModelInfo, error) {
+	a.mu.RLock()
+	models := a.models
+	a.mu.RUnlock()
+	if models == nil {
+		return nil, errors.New("模型管理器未就绪")
+	}
+	ctx, cancel := context.WithTimeout(a.contextForModels(), 60*time.Second)
+	defer cancel()
+	entry, err := models.AddRepoModel(ctx, strings.TrimSpace(input.ID), input.Repo, input.Engine)
+	if err != nil {
+		return nil, err
+	}
+	return &ModelInfo{
+		ID:          entry.ID,
+		Name:        entry.Name,
+		Repo:        entry.Repo,
+		SizeBytes:   entry.SizeBytes,
+		Description: entry.Description,
+		Engine:      entry.Engine,
+		Custom:      true,
+		Files:       entry.Required,
+	}, nil
+}
+
+// persistLocalModel 把本地模型记录写进设置。
+func (a *App) persistLocalModel(id, dir string) error {
+	store, err := a.storeHandle()
+	if err != nil {
+		return err
+	}
+	ctx := a.contextOrBackground()
+	current, err := store.LoadSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if current.LocalModels == nil {
+		current.LocalModels = map[string]string{}
+	}
+	current.LocalModels[id] = dir
+	if err := store.SaveSettings(ctx, current); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.settings = current
+	a.mu.Unlock()
+	return nil
+}
+
+// unregisterLocalModel 从清单与设置里移除一个本地模型（不动磁盘文件）。
+func (a *App) unregisterLocalModel(id string) error {
+	a.mu.RLock()
+	models := a.models
+	a.mu.RUnlock()
+	if models == nil {
+		return errors.New("模型管理器未就绪")
+	}
+	models.RemoveLocalModel(id)
+	return a.persistLocalModelRemoval(id)
+}
+
+// persistLocalModelRemoval 从设置里删掉本地模型记录。
+func (a *App) persistLocalModelRemoval(id string) error {
+	store, err := a.storeHandle()
+	if err != nil {
+		return err
+	}
+	ctx := a.contextOrBackground()
+	current, err := store.LoadSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if current.LocalModels == nil {
+		return nil
+	}
+	delete(current.LocalModels, id)
+	if err := store.SaveSettings(ctx, current); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.settings = current
+	a.mu.Unlock()
+	return nil
+}
+
+// PickDirectory 打开系统目录选择框，返回用户选中的绝对路径。
+func (a *App) PickDirectory() (string, error) {
+	if a.ctx == nil {
+		return "", errors.New("当前环境不支持目录对话框，请直接填写本机绝对路径")
+	}
+	path, err := wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "选择模型目录",
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(path), nil
+}
+
+// contextForModels 返回模型相关操作的上下文。
+func (a *App) contextForModels() context.Context {
+	return a.contextOrBackground()
 }
 
 // OpenModelFolder 在文件管理器中打开模型缓存目录。
@@ -528,6 +704,8 @@ func (a *App) GetSettings() SettingsSnapshot {
 		CloudPrivacyConfirm:  settings.CloudPrivacyConfirm,
 		TranslationStyle:     defaultStyle(settings.TranslationStyle),
 		GlossaryText:         formatGlossary(settings.Glossary),
+		HuggingFaceTokenSet:  strings.TrimSpace(settings.HuggingFaceToken) != "",
+		LocalModels:          settings.LocalModels,
 	}
 }
 
@@ -568,6 +746,18 @@ func (a *App) UpdateSettings(patch SettingsPatch) (*SettingsSnapshot, error) {
 	if patch.TranslationStyle != nil {
 		current.TranslationStyle = defaultStyle(*patch.TranslationStyle)
 	}
+	if patch.HuggingFaceToken != nil {
+		// 空串表示保持不变，"-" 表示清除，避免用户想清空却清不掉。
+		value := strings.TrimSpace(*patch.HuggingFaceToken)
+		switch value {
+		case "":
+			// 保持不变
+		case "-":
+			current.HuggingFaceToken = ""
+		default:
+			current.HuggingFaceToken = value
+		}
+	}
 	if patch.GlossaryText != nil {
 		glossary, err := parseGlossary(*patch.GlossaryText)
 		if err != nil {
@@ -597,20 +787,27 @@ func (a *App) UpdateSettings(patch SettingsPatch) (*SettingsSnapshot, error) {
 	a.settings = current
 	a.mu.Unlock()
 
-	// 设置变化后重建模型管理器，使镜像与目录立即生效。
-	if models := a.models; models != nil {
+	// 设置变化后重建模型管理器，使镜像、目录与访问令牌立即生效。
+	a.mu.RLock()
+	existingModels := a.models
+	a.mu.RUnlock()
+	if existingModels != nil {
 		newRoot := strings.TrimSpace(current.ModelDir)
-		if newRoot != "" && newRoot != models.RootDir() {
-			a.mu.Lock()
-			a.models = modelmanager.New(modelmanager.Options{
-				RootDir:   newRoot,
-				Mirrors:   mirrorsFor(current.Mirror, current.HuggingFaceEndpoint),
-				InUse:     a.modelInUse,
-				Catalog:   modelmanager.DefaultCatalog(),
-				UserAgent: "transcribe-whisper/1.0",
-			})
-			a.mu.Unlock()
+		if newRoot == "" {
+			newRoot = existingModels.RootDir()
 		}
+		a.mu.Lock()
+		rebuilt := modelmanager.New(modelmanager.Options{
+			RootDir:   newRoot,
+			Mirrors:   mirrorsFor(current.Mirror, current.HuggingFaceEndpoint),
+			InUse:     a.modelInUse,
+			Catalog:   modelmanager.DefaultCatalog(),
+			UserAgent: "transcribe-whisper/1.0",
+			Token:     current.HuggingFaceToken,
+		})
+		registerLocalModels(rebuilt, current)
+		a.models = rebuilt
+		a.mu.Unlock()
 	}
 
 	snapshot := a.GetSettings()
@@ -637,6 +834,46 @@ func (a *App) TestTranslationProvider() (string, error) {
 		return "", err
 	}
 	return "翻译服务连接正常（" + kind + " · " + settings.TranslationModel + "）", nil
+}
+
+// hasHuggingFaceToken 报告是否配置了 Hugging Face 访问令牌。
+//
+// 受限（gated）仓库没有令牌时镜像站直接返回 403，与其让用户看一个费解的
+// 403，不如提前拦住并告诉他去设置里填令牌。
+func hasHuggingFaceToken(settings repository.SettingsRecord) bool {
+	return strings.TrimSpace(settings.HuggingFaceToken) != ""
+}
+
+// ListOllamaModels 列出本机 Ollama 已安装的模型，供翻译设置里手动选择。
+//
+// 端点取当前设置中的 translationEndpoint（为空时用默认 127.0.0.1:11434），
+// 这样用户改了端口也能立即生效。服务未启动时返回中文错误而不是空列表，
+// 界面可以据此提示「请先 ollama serve」。
+func (a *App) ListOllamaModels() ([]OllamaModelInfo, error) {
+	settings := a.currentSettings()
+	endpoint := settings.TranslationEndpoint
+	if strings.TrimSpace(endpoint) == "" {
+		endpoint = "http://127.0.0.1:11434"
+	}
+	ctx, cancel := context.WithTimeout(a.contextOrBackground(), 10*time.Second)
+	defer cancel()
+
+	models, err := translation.ListOllamaModels(ctx, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OllamaModelInfo, 0, len(models))
+	for _, m := range models {
+		out = append(out, OllamaModelInfo{
+			Name:          m.Name,
+			Size:          m.Size,
+			ParameterSize: m.ParameterSize,
+			Quantization:  m.Quantization,
+			Family:        m.Family,
+			ModifiedAt:    m.ModifiedAt,
+		})
+	}
+	return out, nil
 }
 
 // GetEnvironment 探测本机运行环境。
@@ -697,6 +934,13 @@ func (a *App) GetEnvironment() EnvironmentStatus {
 			status.FFmpegPath = resolved
 		}
 	}
+
+	// transformers 引擎（cohere 等模型）与 faster-whisper 的依赖不同，单独探测。
+	transformersEngine := asr.NewTransformersEngine()
+	transformersEngine.PythonPath = settings.PythonPath
+	ok, detail := transformersEngine.Available(ctx)
+	status.Transformers = ok
+	status.TransformersDetail = detail
 	return status
 }
 
@@ -750,13 +994,18 @@ func (a *App) BurnSubtitles(taskID string, input BurnSubtitlesInput) (string, er
 }
 
 // detectGPU 读取显卡型号。
+//
+// 注意：nvidia-smi 必须隐藏窗口运行。这段代码在「模型管理」页加载时被
+// GetEnvironment 调用，若不设 CREATE_NO_WINDOW，Windows 会为它临时创建
+// 一个命令行窗口并一闪而过（本机实测就是这个现象）。
 func detectGPU() string {
-	if runtime.GOOS != "windows" {
-		return ""
-	}
 	cmd := exec.Command("nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader")
+	hideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
+		return ""
+	}
+	if len(output) == 0 {
 		return ""
 	}
 	line := strings.TrimSpace(strings.SplitN(string(output), "\n", 2)[0])
@@ -774,6 +1023,8 @@ func openPath(path string) error {
 	default:
 		cmd = exec.Command("xdg-open", path)
 	}
+	// explorer 同样会闪出控制台窗口，这里一并隐藏。
+	hideWindow(cmd)
 	return cmd.Start()
 }
 

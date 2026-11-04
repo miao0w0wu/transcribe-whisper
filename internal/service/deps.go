@@ -7,6 +7,7 @@ package service
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"transcribe-whisper/internal/asr"
@@ -23,8 +24,66 @@ type MediaExtractor interface {
 }
 
 // ModelResolver 负责确保某个模型已经下载到本地，并返回本地目录。
+//
+// 除了下载与目录解析，它还向编排层提供「这个模型该用哪个识别引擎」的
+// 信息：同一个任务里模型格式可能是 CTranslate2，也可能是 transformers
+// safetensors，不能一律交给 faster-whisper。
 type ModelResolver interface {
 	Ensure(ctx context.Context, modelID string, progress modelmanager.Progress) (string, error)
+}
+
+// ModelEngineResolver 是可选能力：能根据模型 ID 报告其适用的识别引擎。
+//
+// 未实现时编排层回退到设置里的引擎名，保证旧行为不变。
+type ModelEngineResolver interface {
+	// EngineFor 返回该模型适用的引擎标识（faster-whisper / transformers）。
+	// 未知模型返回空串。
+	EngineFor(modelID string) string
+}
+
+// EngineSelector 根据模型格式挑选识别引擎。
+type EngineSelector interface {
+	// Select 返回处理该模型所需的引擎。
+	//   modelID 可为空（表示用默认模型）；
+	//   prefer 是设置里配置的引擎名，仅在没有更具体的模型信息时生效。
+	Select(modelID, prefer string) asr.Engine
+}
+
+// StaticEngineSelector 是 EngineSelector 的默认实现：按模型清单里的 Engine
+// 字段路由，找不到清单项时用 prefer 对应的引擎。
+type StaticEngineSelector struct {
+	// Fallback 是模型不在清单里时使用的引擎（通常是 faster-whisper）。
+	Fallback asr.Engine
+	// Engines 是引擎标识 -> 引擎实例。
+	Engines map[string]asr.Engine
+	// Lookup 返回模型适配的引擎标识；为 nil 时只用 prefer。
+	Lookup func(modelID string) string
+}
+
+// Select 实现 EngineSelector。
+//
+// 优先级：模型的 Engine 字段 > prefer > Fallback。这样用户选了 cohere 时
+// 一定走 transformers，不会因为设置里写着 faster-whisper 而加载失败。
+func (s StaticEngineSelector) Select(modelID, prefer string) asr.Engine {
+	pick := func(name string) asr.Engine {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			return nil
+		}
+		if engine, ok := s.Engines[name]; ok && engine != nil {
+			return engine
+		}
+		return nil
+	}
+	if s.Lookup != nil {
+		if engine := pick(s.Lookup(modelID)); engine != nil {
+			return engine
+		}
+	}
+	if engine := pick(prefer); engine != nil {
+		return engine
+	}
+	return s.Fallback
 }
 
 // TranslatorFactory 根据任务设置构造翻译流水线。
@@ -56,6 +115,8 @@ type Deps struct {
 	// Burner 负责把字幕烧进视频；为 nil 时压制功能不可用。
 	Burner     media.Burner
 	Engine     asr.Engine
+	// Engines 允许按模型格式挑选引擎；为 nil 时一律用 Engine。
+	Engines    EngineSelector
 	Resolver   ModelResolver
 	Translator TranslatorFactory
 	Emitters   []Emitter

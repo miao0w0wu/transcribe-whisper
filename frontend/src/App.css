@@ -120,6 +120,22 @@
 .export-bar .select{width:150px}
 .burn-font{display:flex;align-items:center;gap:6px;font-size:10px;color:#929bad}
 .burn-font-input{width:64px;height:31px;padding:0 8px}
+.form-sub-input{margin-top:6px;height:32px}
+.inline-hint-warn{background:#fdf7ec;border-color:#f2e3c8;color:#8a6a34}
+.add-model{padding:16px 20px;margin-bottom:16px;display:grid;gap:12px}
+.add-model-head strong{display:block;font-size:12px}
+.add-model-head span{display:block;font-size:10px;color:#8b95a9;margin-top:5px;line-height:1.6}
+.add-model-fields{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.add-model-fields .text-input{flex:1;min-width:220px}
+.add-model-id{max-width:190px;flex:0 0 auto}
+.model-tags{display:flex;gap:5px;margin-top:5px;flex-wrap:wrap}
+.model-tag{font-size:9px;padding:1px 6px;border-radius:3px;border:1px solid #e3e7ef;color:#7b86a0;background:#f7f8fc}
+.model-tag.engine-ct2{color:#4a6ea8;border-color:#d4e0f2;background:#eef4fd}
+.model-tag.engine-st{color:#7a5aa8;border-color:#e3d8f2;background:#f5effd}
+.model-tag.tag-local{color:#3f7d5c;border-color:#d3ead9;background:#eefaf2}
+.model-tag.tag-gated{color:#9a6a2f;border-color:#f0e0c8;background:#fdf6ea}
+.model-tag.tag-custom{color:#6b6f86;border-color:#e3e7ef;background:#f7f8fc}
+.model-desc-warn{color:#a5713a}
 .detail-path{display:inline-block;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
 .preview-screen{flex-direction:column;gap:6px}
 .preview-screen small{font-size:10px;opacity:.7}

@@ -28,6 +28,7 @@ func DefaultSettings() SettingsRecord {
 		CloudPrivacyConfirm: false,
 		TranslationStyle:    "subtitle",
 		Glossary:            map[string]string{},
+		LocalModels:         map[string]string{},
 	}
 }
 
@@ -50,18 +51,21 @@ func (s *Store) LoadSettings(ctx context.Context) (SettingsRecord, error) {
 
 func (s *Store) querySettings(ctx context.Context) (SettingsRecord, error) {
 	var (
-		rec      SettingsRecord
-		privacy  int
-		glossary string
+		rec        SettingsRecord
+		privacy    int
+		glossary   string
+		localModel string
 	)
 	err := s.db.QueryRowContext(ctx, `SELECT ffmpeg_path, python_path, model_dir, mirror,
 		hugging_face_endpoint, asr_engine, asr_device, compute_type, default_model,
 		translation_provider, translation_endpoint, translation_model, translation_api_key,
-		cloud_privacy_confirm, translation_style, glossary_json FROM settings WHERE id = 1`).Scan(
+		cloud_privacy_confirm, translation_style, glossary_json, local_models_json,
+		hugging_face_token
+		FROM settings WHERE id = 1`).Scan(
 		&rec.FFmpegPath, &rec.PythonPath, &rec.ModelDir, &rec.Mirror,
 		&rec.HuggingFaceEndpoint, &rec.AsrEngine, &rec.AsrDevice, &rec.ComputeType, &rec.DefaultModel,
 		&rec.TranslationProvider, &rec.TranslationEndpoint, &rec.TranslationModel, &rec.TranslationAPIKey,
-		&privacy, &rec.TranslationStyle, &glossary,
+		&privacy, &rec.TranslationStyle, &glossary, &localModel, &rec.HuggingFaceToken,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SettingsRecord{}, fmt.Errorf("读取设置: %w", ErrNotFound)
@@ -77,6 +81,13 @@ func (s *Store) querySettings(ctx context.Context) (SettingsRecord, error) {
 			rec.Glossary = map[string]string{}
 		}
 	}
+	rec.LocalModels = map[string]string{}
+	if strings.TrimSpace(localModel) != "" {
+		// 同上：本地模型记录损坏时按空处理，不影响其他设置。
+		if unmarshalErr := json.Unmarshal([]byte(localModel), &rec.LocalModels); unmarshalErr != nil {
+			rec.LocalModels = map[string]string{}
+		}
+	}
 	return rec, nil
 }
 
@@ -90,6 +101,10 @@ func (s *Store) SaveSettings(ctx context.Context, rec SettingsRecord) error {
 	if err != nil || rec.Glossary == nil {
 		glossaryBytes = []byte("{}")
 	}
+	localBytes, err := json.Marshal(rec.LocalModels)
+	if err != nil || rec.LocalModels == nil {
+		localBytes = []byte("{}")
+	}
 	style := strings.TrimSpace(rec.TranslationStyle)
 	if style == "" {
 		style = "subtitle"
@@ -101,8 +116,9 @@ func (s *Store) SaveSettings(ctx context.Context, rec SettingsRecord) error {
 	_, err = s.db.ExecContext(ctx, `INSERT INTO settings (
 		id, ffmpeg_path, python_path, model_dir, mirror, hugging_face_endpoint, asr_engine,
 		asr_device, compute_type, default_model, translation_provider, translation_endpoint,
-		translation_model, translation_api_key, cloud_privacy_confirm, translation_style, glossary_json
-	) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		translation_model, translation_api_key, cloud_privacy_confirm, translation_style,
+		glossary_json, local_models_json, hugging_face_token
+	) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		ffmpeg_path = excluded.ffmpeg_path,
 		python_path = excluded.python_path,
@@ -119,11 +135,13 @@ func (s *Store) SaveSettings(ctx context.Context, rec SettingsRecord) error {
 		translation_api_key = excluded.translation_api_key,
 		cloud_privacy_confirm = excluded.cloud_privacy_confirm,
 		translation_style = excluded.translation_style,
-		glossary_json = excluded.glossary_json`,
+		glossary_json = excluded.glossary_json,
+		local_models_json = excluded.local_models_json,
+		hugging_face_token = excluded.hugging_face_token`,
 		rec.FFmpegPath, rec.PythonPath, rec.ModelDir, rec.Mirror, rec.HuggingFaceEndpoint,
 		rec.AsrEngine, rec.AsrDevice, rec.ComputeType, rec.DefaultModel, rec.TranslationProvider,
 		rec.TranslationEndpoint, rec.TranslationModel, rec.TranslationAPIKey, privacy,
-		style, string(glossaryBytes),
+		style, string(glossaryBytes), string(localBytes), rec.HuggingFaceToken,
 	)
 	if err != nil {
 		return fmt.Errorf("保存设置失败: %w", err)

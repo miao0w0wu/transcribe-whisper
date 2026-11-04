@@ -28,8 +28,16 @@ function buildEnvItems(env: EnvironmentStatus | null): EnvItem[] {
     { key: 'subtitle', label: 'FFmpeg 字幕滤镜', ok: env.ffmpegSubtitle, detail: env.ffmpegSubtitle ? '已编译 subtitles 滤镜' : '缺少 subtitles 滤镜，无法压制字幕' },
     { key: 'python', label: 'Python', ok: env.pythonOk, detail: env.pythonDetail || env.pythonPath || '未检测到' },
     { key: 'whisper', label: 'faster-whisper', ok: env.fasterWhisper, detail: env.fasterWhisper ? '已安装，可以进行识别' : '未安装，请先 pip install faster-whisper' },
+    { key: 'transformers', label: 'transformers', ok: env.transformers, detail: env.transformers ? '已安装，可以加载 cohere 等模型' : '未安装，请 pip install torch "transformers>=5.4.0"' },
     { key: 'gpu', label: 'GPU', ok: Boolean(env.gpu), detail: env.gpu || '未检测到可用显卡，将使用 CPU 推理' },
   ];
+}
+
+/** 引擎标签，用于在列表里区分模型格式 */
+function engineLabel(engine: string): string {
+  if (engine === 'transformers') return 'transformers';
+  if (engine === 'faster-whisper') return 'faster-whisper';
+  return engine || 'faster-whisper';
 }
 
 export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
@@ -42,6 +50,13 @@ export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
   const [busyId, setBusyId] = useState<string | null>(null);
   // model:progress 推送的临时进度，优先级高于 ListModels 的快照
   const [liveProgress, setLiveProgress] = useState<Record<string, ModelProgressEvent>>({});
+  // 添加模型面板
+  const [addingLocal, setAddingLocal] = useState(false);
+  const [localDir, setLocalDir] = useState('');
+  const [localId, setLocalId] = useState('');
+  const [repoInput, setRepoInput] = useState('');
+  const [repoId, setRepoId] = useState('');
+  const [addingRepo, setAddingRepo] = useState(false);
 
   const loadModels = useCallback(async () => {
     if (demo) {
@@ -148,12 +163,16 @@ export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
 
   const handleRemove = async (model: ModelInfo) => {
     if (demo) return;
-    if (!window.confirm(`确定删除本地模型「${model.name || model.id}」吗？删除后需要重新下载。`)) return;
+    const isLocal = model.local;
+    const promptText = isLocal
+      ? `确定把「${model.name || model.id}」从列表移除吗？不会删除磁盘上的模型文件。`
+      : `确定删除本地模型「${model.name || model.id}」吗？删除后需要重新下载。`;
+    if (!window.confirm(promptText)) return;
     setBusyId(model.id);
     setError('');
     try {
       await api.removeModel(model.id);
-      setHint(`已删除「${model.name || model.id}」。`);
+      setHint(isLocal ? `已移除「${model.name || model.id}」，磁盘文件保留。` : `已删除「${model.name || model.id}」。`);
       await loadModels();
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除模型失败，请稍后重试。');
@@ -172,6 +191,75 @@ export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
     }
   };
 
+  /** 选择本地模型目录 */
+  const handlePickLocalDir = async () => {
+    if (demo) return;
+    setError('');
+    try {
+      const dir = await api.pickDirectory();
+      if (dir) {
+        setLocalDir(dir);
+        setAddingLocal(true);
+        // 目录名默认作为模型标识，用户可改。
+        if (!localId) {
+          const base = dir.split(/[\\/]/).filter(Boolean).pop() ?? '';
+          setLocalId(base);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '选择目录失败，请稍后重试。');
+    }
+  };
+
+  /** 注册本地模型 */
+  const handleAddLocal = async () => {
+    if (demo) return;
+    if (!localDir.trim()) {
+      setError('请先选择本地模型目录。');
+      return;
+    }
+    setBusyId('__local__');
+    setError('');
+    setHint('');
+    try {
+      const model = await api.addLocalModel({ directory: localDir.trim(), id: localId.trim() });
+      setHint(`已添加本地模型「${model.name || model.id}」（${engineLabel(model.engine)} 格式）。`);
+      setLocalDir('');
+      setLocalId('');
+      setAddingLocal(false);
+      await loadModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '添加本地模型失败，请稍后重试。');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /** 按链接 / 仓库名添加可下载模型 */
+  const handleAddRepo = async () => {
+    if (demo) return;
+    if (!repoInput.trim()) {
+      setError('请填写模型仓库名或 Hugging Face 链接。');
+      return;
+    }
+    setAddingRepo(true);
+    setError('');
+    setHint('');
+    try {
+      const model = await api.addRepoModel({ repo: repoInput.trim(), id: repoId.trim(), engine: '' });
+      setHint(
+        `已添加「${model.name || model.id}」（${engineLabel(model.engine)} 格式，共 ${formatBytes(model.sizeBytes)}），可以开始下载。`,
+      );
+      setRepoInput('');
+      setRepoId('');
+      await loadModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '添加模型仓库失败，请稍后重试。');
+    } finally {
+      setAddingRepo(false);
+    }
+  };
+
   const envItems = buildEnvItems(environment);
   const envHealthy = envItems.every((item) => item.ok);
 
@@ -187,6 +275,9 @@ export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
           </p>
         </div>
         <div className="heading-actions">
+          <button type="button" className="button secondary" disabled={demo || busyId === '__local__'} onClick={() => void handlePickLocalDir()}>
+            自选本地模型
+          </button>
           <button type="button" className="button secondary" disabled={demo} onClick={() => void handleOpenFolder()}>
             打开缓存目录
           </button>
@@ -206,6 +297,85 @@ export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
 
       <ErrorBar message={error} onDismiss={() => setError('')} />
       {hint ? <NoticeBar tone="success">{hint}</NoticeBar> : null}
+
+      {/* 自选本地模型 / 按链接添加 */}
+      {addingLocal ? (
+        <div className="add-model card">
+          <div className="add-model-head">
+            <strong>添加本地模型</strong>
+            <span>选择已下载到本机的模型目录，会自动识别 CTranslate2 与 transformers 两种格式。</span>
+          </div>
+          <div className="add-model-fields">
+            <input
+              className="text-input"
+              value={localDir}
+              placeholder="模型目录绝对路径，例如 D:\\AI\\Models\\cohere-transcribe"
+              onChange={(event) => setLocalDir(event.target.value)}
+            />
+            <input
+              className="text-input add-model-id"
+              value={localId}
+              placeholder="模型标识（可留空）"
+              onChange={(event) => setLocalId(event.target.value)}
+            />
+            <button type="button" className="button secondary" disabled={demo} onClick={() => void handlePickLocalDir()}>
+              浏览…
+            </button>
+            <button
+              type="button"
+              className="button primary"
+              disabled={demo || busyId === '__local__' || !localDir.trim()}
+              onClick={() => void handleAddLocal()}
+            >
+              {busyId === '__local__' ? '校验中…' : '添加'}
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              disabled={busyId === '__local__'}
+              onClick={() => {
+                setAddingLocal(false);
+                setLocalDir('');
+                setLocalId('');
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="add-model card">
+        <div className="add-model-head">
+          <strong>按链接添加识别模型</strong>
+          <span>
+            填 Hugging Face 仓库名或完整链接（hf-mirror 与 huggingface.co 均可），后端会自动读取文件清单，
+            随后就能像内置模型一样下载。引擎按仓库内容自动判断。
+          </span>
+        </div>
+        <div className="add-model-fields">
+          <input
+            className="text-input"
+            value={repoInput}
+            placeholder="例如 Systran/faster-whisper-large-v3 或 https://hf-mirror.com/org/repo"
+            onChange={(event) => setRepoInput(event.target.value)}
+          />
+          <input
+            className="text-input add-model-id"
+            value={repoId}
+            placeholder="模型标识（可留空）"
+            onChange={(event) => setRepoId(event.target.value)}
+          />
+          <button
+            type="button"
+            className="button secondary"
+            disabled={demo || addingRepo || !repoInput.trim()}
+            onClick={() => void handleAddRepo()}
+          >
+            {addingRepo ? '读取中…' : '添加并读取清单'}
+          </button>
+        </div>
+      </div>
 
       <section className={`model-source card ${envHealthy ? '' : 'has-warning'}`}>
         <div className="env-grid">
@@ -270,9 +440,20 @@ export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
               <div className="model-row model-row-extended" key={model.id}>
                 <div className="model-name-cell">
                   <strong>{model.name || model.id}</strong>
-                  <small>{model.repo || model.id}</small>
+                  <small>{model.repo || model.localPath || model.id}</small>
+                  <div className="model-tags">
+                    <span className={`model-tag engine-${model.engine === 'transformers' ? 'st' : 'ct2'}`}>
+                      {engineLabel(model.engine)}
+                    </span>
+                    {model.local ? <span className="model-tag tag-local">本地目录</span> : null}
+                    {model.gated ? <span className="model-tag tag-gated">受限仓库</span> : null}
+                    {model.custom && !model.local ? <span className="model-tag tag-custom">自定义</span> : null}
+                  </div>
                   {model.description ? <small className="model-desc">{model.description}</small> : null}
                   {live?.message ? <small className="model-desc">{live.message}</small> : null}
+                  {model.local && !model.installedOk ? (
+                    <small className="model-desc model-desc-warn">目录已不可用，可能被移动或删除</small>
+                  ) : null}
                 </div>
                 <span>{formatBytes(model.sizeBytes)}</span>
                 <div className="model-status-cell">
@@ -283,12 +464,23 @@ export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
                     </>
                   ) : (
                     <span className={model.installed ? 'model-status default' : 'model-status missing'}>
-                      {model.installed ? '已安装' : '未安装'}
+                      {model.local ? (model.installedOk ? '本地可用' : '目录失效') : model.installed ? '已安装' : '未安装'}
                     </span>
                   )}
                 </div>
                 <div className="model-actions">
-                  {downloading ? (
+                  {model.local ? (
+                    // 本地目录模型不提供下载；「删除」只是解除注册，不动磁盘文件。
+                    <button
+                      type="button"
+                      className="queue-action danger"
+                      disabled={demo || busy}
+                      title="仅从列表移除，不会删除磁盘上的文件"
+                      onClick={() => void handleRemove(model)}
+                    >
+                      移除
+                    </button>
+                  ) : downloading ? (
                     <button type="button" className="queue-action danger" disabled={demo || busy} onClick={() => void handleCancel(model)}>
                       取消
                     </button>
@@ -297,14 +489,16 @@ export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
                       {model.installed ? '重新下载' : '下载'}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="queue-action danger"
-                    disabled={demo || busy || (!model.installed && !downloading)}
-                    onClick={() => void handleRemove(model)}
-                  >
-                    删除
-                  </button>
+                  {model.local ? null : (
+                    <button
+                      type="button"
+                      className="queue-action danger"
+                      disabled={demo || busy || (!model.installed && !downloading)}
+                      onClick={() => void handleRemove(model)}
+                    >
+                      删除
+                    </button>
+                  )}
                 </div>
               </div>
             );

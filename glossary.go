@@ -10,7 +10,7 @@ import (
 func defaultStyle(style string) string {
 	normalized := strings.ToLower(strings.TrimSpace(style))
 	switch normalized {
-	case "subtitle", "formal", "casual", "literal":
+	case "subtitle", "formal", "casual", "literal", "explicit":
 		return normalized
 	default:
 		return "subtitle"

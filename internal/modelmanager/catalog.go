@@ -30,9 +30,38 @@ const (
 	sizeModelLargeV3   = int64(3087284237)
 )
 
+// cohereTranscribeRepo 是 cohere-transcribe-03-2026 的下载来源。
+//
+// 官方仓库 `CohereLabs/cohere-transcribe-03-2026` 在 Hugging Face 上是受限
+// 仓库（gated: auto），实测 hf-mirror 的 resolve 直接返回 403，镜像站无法
+// 代为放行。这里改用内容完全一致的公开副本：文件清单、体积、sha 均与官方
+// 一致（model.safetensors 4,131,862,976 字节），无需令牌即可下载。
+const cohereTranscribeRepo = "viethang/cohere-transcribe-03-2026"
+
+// cohereTranscribeUnusedFiles 是该仓库里与推理无关的文件。
+//
+// 只保留推理真正需要的：配置、权重、预处理/处理逻辑、tokenizer 与自定义
+// 建模代码（transformers 需要这些 .py 才能加载 cohere_asr 结构）。
+// demo 音频、评测结果与图片不下载，避免白白多传几十 MB。
+var cohereTranscribeRequired = []string{
+	"config.json",
+	"generation_config.json",
+	"preprocessor_config.json",
+	"processor_config.json",
+	"special_tokens_map.json",
+	"tokenizer.json",
+	"tokenizer.model",
+	"tokenizer_config.json",
+	"model.safetensors",
+	"configuration_cohere_asr.py",
+	"modeling_cohere_asr.py",
+	"processing_cohere_asr.py",
+	"tokenization_cohere_asr.py",
+}
+
 // DefaultCatalog 返回内置模型清单。
 //
-// 来源均为 Hugging Face 上的官方 CTranslate2 转换仓库
+// faster-whisper 系列来源为 Hugging Face 上的官方 CTranslate2 转换仓库
 // `Systran/faster-whisper-<size>`；仓库内实际存在的文件为：
 //
 //   - config.json          （全部型号）
@@ -45,7 +74,7 @@ const (
 // 加载本地目录时缺少 tokenizer 或词表会直接报 “Cannot load the vocabulary”，
 // 因此它们都是运行必需文件；下载中断留下的半成品目录也不会被当成「已安装」。
 func DefaultCatalog() []CatalogEntry {
-	return []CatalogEntry{
+	entries := []CatalogEntry{
 		newEntry(
 			"tiny",
 			"Whisper Tiny",
@@ -106,6 +135,41 @@ func DefaultCatalog() []CatalogEntry {
 				{Path: "vocabulary.json", Size: sizeVocabularyV3},
 			},
 		),
+		newCohereEntry(),
+	}
+	return entries
+}
+
+// newCohereEntry 组装 cohere-transcribe-03-2026 清单项。
+//
+// 该模型是 transformers 格式（CohereAsrForConditionalGeneration，2.07B 参数
+// BF16 权重），必须由 transformers 引擎加载，faster-whisper 无法读取。
+// 实测在 HF Open ASR Leaderboard 上平均 WER 5.42%，支持 14 种语言（含中文）。
+func newCohereEntry() CatalogEntry {
+	files := []ManifestFile{
+		{Path: "config.json", Size: 3998},
+		{Path: "generation_config.json", Size: 234},
+		{Path: "preprocessor_config.json", Size: 420},
+		{Path: "processor_config.json", Size: 131},
+		{Path: "special_tokens_map.json", Size: 4091},
+		{Path: "tokenizer.json", Size: 1816694},
+		{Path: "tokenizer.model", Size: 492827},
+		{Path: "tokenizer_config.json", Size: 48138},
+		{Path: "model.safetensors", Size: 4131862976},
+		{Path: "configuration_cohere_asr.py", Size: 1795},
+		{Path: "modeling_cohere_asr.py", Size: 64648},
+		{Path: "processing_cohere_asr.py", Size: 20572},
+		{Path: "tokenization_cohere_asr.py", Size: 6623},
+	}
+	return CatalogEntry{
+		ID:          "cohere-transcribe",
+		Name:        "Cohere Transcribe 03-2026",
+		Repo:        cohereTranscribeRepo,
+		Description: "2.07B 参数，Open ASR Leaderboard 平均 WER 5.42%，支持含中文的 14 种语言；transformers 格式，需要 torch 与 transformers 5.x。",
+		SizeBytes:   4131862976,
+		Files:       files,
+		Required:    cohereTranscribeRequired,
+		Engine:      EngineTransformers,
 	}
 }
 
@@ -150,6 +214,11 @@ func requiredFiles(files []ManifestFile) []string {
 //	faster-whisper-small
 //	systran__faster-whisper-small     （本地缓存目录名会把 / 换成 __）
 //	Systran--faster-whisper-small     （Hugging Face 的旧式缓存目录名）
+//
+// 注意：这里只做「宽进」归一化，产出的结果不一定是清单 ID。例如
+// viethang/cohere-transcribe-03-2026 会得到 cohere-transcribe-03-2026，
+// 而清单 ID 是 cohere-transcribe。所以匹配必须走 findInCatalog —— 它会
+// 同时比对原始 ID、Repo 与归一化结果，不要直接用本函数的输出做等值判断。
 func NormalizeModelID(id string) string {
 	s := strings.ToLower(strings.TrimSpace(id))
 	if s == "" {

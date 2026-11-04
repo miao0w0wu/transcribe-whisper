@@ -160,9 +160,6 @@ func (q *Queue) extractAudio(tc *taskContext, rec *repository.TaskRecord, settin
 
 // transcribeStage 执行识别并把结果写入数据库。
 func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, settings repository.SettingsRecord, audioPath string) ([]repository.SegmentRecord, string, error) {
-	if q.deps.Engine == nil {
-		return nil, "", errors.New("识别引擎未配置")
-	}
 	engineName := strings.TrimSpace(rec.Engine)
 	if engineName == "" {
 		engineName = settings.AsrEngine
@@ -174,13 +171,27 @@ func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, set
 	if modelID == "" {
 		modelID = "small"
 	}
-	needModel := engineName == "faster-whisper"
+
+	// 按模型格式挑引擎：cohere 这类 transformers 模型不能交给 faster-whisper。
+	engine := q.deps.Engine
+	if q.deps.Engines != nil {
+		if picked := q.deps.Engines.Select(modelID, engineName); picked != nil {
+			engine = picked
+		}
+	}
+	if engine == nil {
+		return nil, "", errors.New("识别引擎未配置")
+	}
+	// 实际使用的引擎名以选中结果为准：任务记录里的 engine 可能是旧值。
+	engineName = engine.Name()
 
 	if err := q.updateStatus(tc.ctx, rec.ID, repository.TaskStatusTranscribing, StageTranscribing, "正在识别", progressExtractEnd,
 		"加载识别模型 "+modelID, ""); err != nil {
 		return nil, "", err
 	}
 
+	// 所有引擎都需要模型目录：faster-whisper 要 CTranslate2 目录，
+	// transformers 要 safetensors 目录。自选本地模型也是通过 Ensure 解析的。
 	modelPath := ""
 	modelRoot := ""
 	if q.deps.Resolver != nil {
@@ -188,8 +199,6 @@ func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, set
 		if ok {
 			modelRoot = manager.RootDir()
 		}
-	}
-	if needModel && q.deps.Resolver != nil {
 		path, err := q.deps.Resolver.Ensure(tc.ctx, modelID, func(ratio float64, message string) {
 			p := progressExtractEnd + int(clampFloat(ratio)*float64(progressAsrEnd-progressExtractEnd-5))
 			_ = q.updateStatus(context.WithoutCancel(tc.ctx), rec.ID, repository.TaskStatusTranscribing, StageTranscribing, "正在下载模型", p, message, "")
@@ -199,7 +208,7 @@ func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, set
 				return nil, "", aborted
 			}
 			if strings.Contains(err.Error(), "未知的模型") {
-				return nil, "", fmt.Errorf("模型 %s 不在内置清单中，请先在「模型管理」下载可用模型，或到设置里更换默认模型", modelID)
+				return nil, "", fmt.Errorf("模型 %s 不在模型清单中，请先在「模型管理」下载可用模型或自选本地模型，或到设置里更换默认模型", modelID)
 			}
 			return nil, "", fmt.Errorf("准备识别模型失败: %w", err)
 		}
@@ -240,7 +249,7 @@ func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, set
 		}
 	}
 
-	result, err := q.deps.Engine.Transcribe(tc.ctx, req, progressFn)
+	result, err := engine.Transcribe(tc.ctx, req, progressFn)
 	if err != nil {
 		return nil, "", fmt.Errorf("语音识别失败: %w", err)
 	}

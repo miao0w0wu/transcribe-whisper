@@ -3,12 +3,15 @@
 // 这样纯浏览器（无 Wails 运行时）下的演示模式、错误文案统一处理都集中在一处。
 import { invoke } from './runtime';
 import type {
+  AddLocalModelInput,
+  AddRepoModelInput,
   BurnSubtitlesInput,
   CreateTaskInput,
   Dashboard,
   EnvironmentStatus,
   ExportFormat,
   ModelInfo,
+  OllamaModelInfo,
   SettingsPatch,
   SettingsSnapshot,
   SubtitleSegment,
@@ -17,8 +20,11 @@ import type {
 
 export { ApiError, BackendUnavailableError, DEMO_MODE_NOTICE, isWailsRuntime } from './runtime';
 export type {
+  AddLocalModelInput,
+  AddRepoModelInput,
   BurnSubtitlesInput,
   CreateTaskInput,
+  OllamaModelInfo,
   Dashboard,
   EnvironmentStatus,
   ExportFormat,
@@ -134,6 +140,26 @@ export function cancelModelDownload(modelID: string): Promise<void> {
 /** 删除本地模型 */
 export function removeModel(modelID: string): Promise<void> {
   return invoke<void>('RemoveModel', '删除模型', [modelID]);
+}
+
+/** 把本地目录注册为识别模型（自动识别 CTranslate2 / transformers 格式） */
+export function addLocalModel(input: AddLocalModelInput): Promise<ModelInfo> {
+  return invoke<ModelInfo>('AddLocalModel', '添加本地模型', [input]);
+}
+
+/** 用仓库名或 Hugging Face 链接新增一个可下载模型 */
+export function addRepoModel(input: AddRepoModelInput): Promise<ModelInfo> {
+  return invoke<ModelInfo>('AddRepoModel', '添加模型仓库', [input]);
+}
+
+/** 打开系统目录选择框，返回绝对路径（取消时为空串） */
+export function pickDirectory(): Promise<string> {
+  return invoke<string>('PickDirectory', '选择目录');
+}
+
+/** 列出本机 Ollama 已安装的模型（用于翻译模型下拉选择） */
+export function listOllamaModels(): Promise<OllamaModelInfo[]> {
+  return invoke<OllamaModelInfo[]>('ListOllamaModels', '读取本地 Ollama 模型');
 }
 
 /** 读取设置 */

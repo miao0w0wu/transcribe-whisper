@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,10 +47,14 @@ func (f *fakeMedia) Extract(ctx context.Context, req media.ExtractRequest) error
 }
 
 // fakeEngine 模拟识别引擎。
+//
+// called 用原子变量：执行器 goroutine 写、测试 goroutine 读，
+// 普通 bool 会让 -race 报警。
 type fakeEngine struct {
 	result  *asr.Result
 	err     error
 	onStart func(ctx context.Context)
+	called  atomic.Bool
 }
 
 func (f *fakeEngine) Name() string { return "faster-whisper" }
@@ -57,6 +62,7 @@ func (f *fakeEngine) Name() string { return "faster-whisper" }
 func (f *fakeEngine) Available(ctx context.Context) (bool, string) { return true, "ok" }
 
 func (f *fakeEngine) Transcribe(ctx context.Context, req asr.Request, progress asr.Progress) (*asr.Result, error) {
+	f.called.Store(true)
 	if f.onStart != nil {
 		f.onStart(ctx)
 	}
@@ -449,9 +455,18 @@ func TestEmitterReceivesProgress(t *testing.T) {
 	if _, err := queue.Enqueue(context.Background(), rec.ID); err != nil {
 		t.Fatalf("启动任务失败: %v", err)
 	}
+	// 不能只等「数据库里状态变成 completed」：emit 是异步的，最后那个
+	// completed 事件可能还没送达就被断言了，用例会随机失败。
+	// 这里直接等事件里确实收到 completed。
 	waitFor(t, 5*time.Second, func() bool {
-		current, err := queue.store().GetTask(context.Background(), rec.ID)
-		return err == nil && current.Status == repository.TaskStatusCompleted
+		mu.Lock()
+		defer mu.Unlock()
+		for _, s := range stages {
+			if s == repository.TaskStatusCompleted {
+				return true
+			}
+		}
+		return false
 	})
 
 	mu.Lock()

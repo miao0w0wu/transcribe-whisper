@@ -1,7 +1,7 @@
 // 翻译设置视图：读写 GetSettings / UpdateSettings，包含翻译服务、识别引擎与模型目录。
 import { useCallback, useEffect, useState } from 'react';
 import * as api from '../lib/api';
-import type { ModelInfo, SettingsPatch, SettingsSnapshot } from '../lib/types';
+import type { ModelInfo, OllamaModelInfo, SettingsPatch, SettingsSnapshot } from '../lib/types';
 import { ASR_DEVICES, ASR_ENGINES, COMPUTE_TYPES, TRANSLATION_PROVIDERS, TRANSLATION_STYLES } from '../lib/types';
 import { DemoNotice, ErrorBar, FormField, LoadingState, NoticeBar } from './components/primitives';
 
@@ -81,6 +81,11 @@ export function SettingsView({ demo }: SettingsViewProps) {
   const [hint, setHint] = useState('');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // 本机 Ollama 模型列表：进入设置页、切换端点后自动拉取
+  const [ollamaModels, setOllamaModels] = useState<OllamaModelInfo[]>([]);
+  const [ollamaLoading, setOllamaLoading] = useState(false);
+  const [ollamaError, setOllamaError] = useState('');
+  const [hfTokenInput, setHfTokenInput] = useState('');
 
   const load = useCallback(async () => {
     if (demo) {
@@ -108,6 +113,35 @@ export function SettingsView({ demo }: SettingsViewProps) {
     void load();
   }, [load]);
 
+  // 拉取本机 Ollama 模型列表。失败不算致命：服务没启动时给出提示，
+  // 用户仍然可以手动填写模型名。
+  const loadOllamaModels = useCallback(
+    async (endpoint: string) => {
+      if (demo) return;
+      setOllamaLoading(true);
+      setOllamaError('');
+      try {
+        const list = await api.listOllamaModels();
+        setOllamaModels(list ?? []);
+        if ((list ?? []).length === 0) {
+          setOllamaError(endpoint ? '本机 Ollama 里还没有任何模型，可先执行 ollama pull 拉取。' : '');
+        }
+      } catch (err) {
+        setOllamaModels([]);
+        setOllamaError(err instanceof Error ? err.message : '读取本地 Ollama 模型失败。');
+      } finally {
+        setOllamaLoading(false);
+      }
+    },
+    [demo],
+  );
+
+  useEffect(() => {
+    void loadOllamaModels(form?.translationEndpoint ?? '');
+    // 只在进入页面时拉取一次；端点变化通过「刷新」按钮触发。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo]);
+
   const patchForm = (partial: Partial<SettingsForm>) => {
     setForm((prev) => (prev ? { ...prev, ...partial } : prev));
     setHint('');
@@ -118,6 +152,7 @@ export function SettingsView({ demo }: SettingsViewProps) {
     // 先保存云端隐私开关，再校验：这样「勾选后立即保存」也能一次成功
     const patch = buildPatch(form, snapshot);
     if (apiKeyInput.trim()) patch.translationApiKey = apiKeyInput.trim();
+    if (hfTokenInput.trim()) patch.huggingFaceToken = hfTokenInput.trim();
     if (form.translationProvider === 'openai' && !form.cloudPrivacyConfirm) {
       setError('使用云端翻译前，请先勾选「我理解字幕文本会上传到云端服务」并保存。');
       return;
@@ -134,6 +169,7 @@ export function SettingsView({ demo }: SettingsViewProps) {
       setSnapshot(updated);
       setForm(toForm(updated));
       setApiKeyInput('');
+      setHfTokenInput('');
       setHint('设置已保存。');
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存设置失败，请稍后重试。');
@@ -159,8 +195,25 @@ export function SettingsView({ demo }: SettingsViewProps) {
     }
   };
 
-  const handleTest = async () => {
+  const handleClearHfToken = async () => {
     if (demo) return;
+    setSaving(true);
+    setError('');
+    try {
+      // 后端约定：传 "-" 表示清除令牌。
+      const updated = await api.updateSettings({ huggingFaceToken: '-' });
+      setSnapshot(updated);
+      setForm(toForm(updated));
+      setHfTokenInput('');
+      setHint('已清除已保存的 Hugging Face 令牌。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '清除令牌失败，请稍后重试。');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {    if (demo) return;
     setTesting(true);
     setTestResult(null);
     setError('');
@@ -202,6 +255,7 @@ export function SettingsView({ demo }: SettingsViewProps) {
 
   const isCloud = form.translationProvider === 'openai';
   const providerMeta = TRANSLATION_PROVIDERS.find((item) => item.value === form.translationProvider);
+  const currentStyleHint = TRANSLATION_STYLES.find((item) => item.value === form.translationStyle)?.hint ?? '';
 
   return (
     <div className="page narrow-page">
@@ -264,13 +318,66 @@ export function SettingsView({ demo }: SettingsViewProps) {
                 onChange={(event) => patchForm({ translationEndpoint: event.target.value })}
               />
             </FormField>
-            <FormField label="翻译模型" hint={isCloud ? '例如 deepseek-chat' : '例如 qwen2.5:7b'}>
-              <input
-                className="text-input"
-                value={form.translationModel}
-                placeholder={isCloud ? 'deepseek-chat' : 'qwen2.5:7b'}
-                onChange={(event) => patchForm({ translationModel: event.target.value })}
-              />
+            {!isCloud && ollamaError ? <div className="inline-hint inline-hint-warn">{ollamaError}</div> : null}
+            <FormField
+              label="翻译模型"
+              hint={
+                isCloud
+                  ? '例如 deepseek-chat'
+                  : ollamaLoading
+                    ? '正在读取本机 Ollama 模型…'
+                    : ollamaModels.length > 0
+                      ? `已自动识别本机 ${ollamaModels.length} 个 Ollama 模型，可直接选择`
+                      : '未读取到本机模型，可手动填写模型名'
+              }
+            >
+              {isCloud ? (
+                <input
+                  className="text-input"
+                  value={form.translationModel}
+                  placeholder="deepseek-chat"
+                  onChange={(event) => patchForm({ translationModel: event.target.value })}
+                />
+              ) : (
+                <>
+                  <div className="input-with-action">
+                    <select
+                      className="select"
+                      value={ollamaModels.some((m) => m.name === form.translationModel) ? form.translationModel : ''}
+                      onChange={(event) => {
+                        if (event.target.value) patchForm({ translationModel: event.target.value });
+                      }}
+                      disabled={demo || ollamaLoading}
+                    >
+                      <option value="">
+                        {ollamaLoading ? '读取中…' : ollamaModels.length > 0 ? '从本机模型中选择…' : '（本机未检测到模型）'}
+                      </option>
+                      {ollamaModels.map((item) => (
+                        <option key={item.name} value={item.name}>
+                          {item.name}
+                          {item.parameterSize ? ` · ${item.parameterSize}` : ''}
+                          {item.quantization ? ` · ${item.quantization}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="button secondary small"
+                      disabled={demo || ollamaLoading}
+                      onClick={() => void loadOllamaModels(form.translationEndpoint)}
+                    >
+                      刷新
+                    </button>
+                  </div>
+                  {/* 允许手填：列表里没有的模型（例如刚 pull 完）也能直接输入 */}
+                  <input
+                    className="text-input form-sub-input"
+                    value={form.translationModel}
+                    placeholder="或手动填写模型名，例如 qwen2.5:7b-instruct"
+                    onChange={(event) => patchForm({ translationModel: event.target.value })}
+                  />
+                </>
+              )}
             </FormField>
             <FormField
               label="API Key"
@@ -311,7 +418,10 @@ export function SettingsView({ demo }: SettingsViewProps) {
           </div>
 
           <div className="form-grid form-grid-spaced">
-            <FormField label="翻译语气" hint="影响译文的正式程度，字幕场景建议用「影视字幕」。">
+            <FormField
+              label="翻译语气"
+              hint="影响译文的表达方式；成人向内容可选「露骨」以获得如实翻译。"
+            >
               <select
                 className="select"
                 value={form.translationStyle}
@@ -325,6 +435,7 @@ export function SettingsView({ demo }: SettingsViewProps) {
               </select>
             </FormField>
           </div>
+          {currentStyleHint ? <div className="inline-hint">{currentStyleHint}</div> : null}
 
           <FormField
             label="术语表"
@@ -386,12 +497,13 @@ export function SettingsView({ demo }: SettingsViewProps) {
                 ))}
               </select>
             </FormField>
-            <FormField label="默认识别模型" hint="新建任务时默认选中的模型">
+            <FormField label="默认识别模型" hint="新建任务时默认选中的模型；cohere 为 transformers 引擎，其余为 faster-whisper">
               <select className="select" value={form.defaultModel} onChange={(event) => patchForm({ defaultModel: event.target.value })}>
                 <option value="">跟随模型管理中的首个已安装模型</option>
                 {models.map((model) => (
                   <option key={model.id} value={model.id} disabled={!model.installed}>
                     {model.name || model.id}
+                    {model.engine === 'transformers' ? ' · transformers' : ''}
                     {model.installed ? '' : '（未安装）'}
                   </option>
                 ))}
@@ -441,6 +553,33 @@ export function SettingsView({ demo }: SettingsViewProps) {
                 placeholder="https://hf-mirror.com"
                 onChange={(event) => patchForm({ huggingFaceEndpoint: event.target.value })}
               />
+            </FormField>
+            <FormField
+              label="Hugging Face 访问令牌"
+              hint={
+                snapshot?.huggingFaceTokenSet
+                  ? '已配置令牌：输入新值才会覆盖，留空表示保持不变。'
+                  : '仅下载受限（gated）仓库时需要；普通模型无需填写。'
+              }
+            >
+              <div className="input-with-action">
+                <input
+                  className="text-input"
+                  type="password"
+                  value={hfTokenInput}
+                  autoComplete="off"
+                  placeholder={snapshot?.huggingFaceTokenSet ? '••••••••（已配置）' : 'hf_...（留空表示不修改）'}
+                  onChange={(event) => setHfTokenInput(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="button secondary small"
+                  disabled={demo || saving || !snapshot?.huggingFaceTokenSet}
+                  onClick={() => void handleClearHfToken()}
+                >
+                  清除
+                </button>
+              </div>
             </FormField>
           </div>
         </div>

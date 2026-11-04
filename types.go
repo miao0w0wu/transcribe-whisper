@@ -80,6 +80,34 @@ type ModelInfo struct {
 	Mirror      string   `json:"mirror"`
 	Description string   `json:"description"`
 	Files       []string `json:"files"`
+	// Engine 是该模型适用的识别引擎：faster-whisper 或 transformers。
+	Engine string `json:"engine"`
+	// Custom 表示这是用户自选 / 自建条目，不是内置清单项。
+	Custom bool `json:"custom"`
+	// Gated 表示 Hugging Face 上的受限仓库，下载需要访问令牌。
+	Gated bool `json:"gated"`
+	// Local 表示这是本地目录模型，不下载也不删除。
+	Local bool `json:"local"`
+	// InstalledOK 是本地模型目录的可用性（已安装但目录被移动时为 false）。
+	InstalledOK bool `json:"installedOk"`
+}
+
+// AddLocalModelInput 是「自选本地模型」的入参。
+type AddLocalModelInput struct {
+	// Directory 是本地模型目录绝对路径。
+	Directory string `json:"directory"`
+	// ID 是模型标识，留空时取目录名。
+	ID string `json:"id"`
+}
+
+// AddRepoModelInput 是「按链接添加模型」的入参。
+type AddRepoModelInput struct {
+	// Repo 是仓库名（org/name）或 Hugging Face 链接。
+	Repo string `json:"repo"`
+	// ID 是模型标识，留空时取仓库名。
+	ID string `json:"id"`
+	// Engine 强制指定引擎，留空时按仓库内容自动判断。
+	Engine string `json:"engine"`
 }
 
 // SettingsSnapshot 是前端可读的设置快照，API Key 只返回是否已配置。
@@ -100,6 +128,10 @@ type SettingsSnapshot struct {
 	CloudPrivacyConfirm  bool   `json:"cloudPrivacyConfirm"`
 	TranslationStyle     string `json:"translationStyle"`
 	GlossaryText         string `json:"glossaryText"`
+	// HuggingFaceTokenSet 只返回是否已配置，绝不把令牌明文透给前端。
+	HuggingFaceTokenSet bool `json:"huggingFaceTokenSet"`
+	// LocalModels 是用户自选的本地识别模型：标识 -> 目录。
+	LocalModels map[string]string `json:"localModels"`
 }
 
 // SettingsPatch 是设置的部分更新入参，空字段表示保持不变。
@@ -121,6 +153,9 @@ type SettingsPatch struct {
 	TranslationStyle    *string `json:"translationStyle"`
 	// GlossaryText 是术语表原文，每行一条，格式：源术语=目标译法。
 	GlossaryText *string `json:"glossaryText"`
+	// HuggingFaceToken 是 HF 访问令牌，用于下载受限（gated）仓库。
+	// 传空串表示保持不变；传 "-" 表示清除。
+	HuggingFaceToken *string `json:"huggingFaceToken"`
 }
 
 // BurnSubtitlesInput 是字幕压制的入参。
@@ -130,6 +165,16 @@ type BurnSubtitlesInput struct {
 	FontName   string `json:"fontName"`
 	FontSize   int    `json:"fontSize"`
 	MarginV    int    `json:"marginV"`
+}
+
+// OllamaModelInfo 描述本机 Ollama 中的一个已安装模型。
+type OllamaModelInfo struct {
+	Name          string `json:"name"`
+	Size          int64  `json:"size"`
+	ParameterSize string `json:"parameterSize"`
+	Quantization  string `json:"quantization"`
+	Family        string `json:"family"`
+	ModifiedAt    string `json:"modifiedAt"`
 }
 
 // EnvironmentStatus 汇总运行环境探测结果。
@@ -142,6 +187,10 @@ type EnvironmentStatus struct {
 	PythonOK       bool   `json:"pythonOk"`
 	PythonDetail   string `json:"pythonDetail"`
 	FasterWhisper  bool   `json:"fasterWhisper"`
-	GPU            string `json:"gpu"`
-	ModelDir       string `json:"modelDir"`
+	// Transformers 表示 torch + transformers 是否就绪（cohere 等模型需要）。
+	Transformers bool `json:"transformers"`
+	// TransformersDetail 是 transformers 引擎的可用性说明。
+	TransformersDetail string `json:"transformersDetail"`
+	GPU                string `json:"gpu"`
+	ModelDir           string `json:"modelDir"`
 }

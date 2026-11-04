@@ -552,14 +552,14 @@ func TestEnsureCancelKeepsPartAndResumesLater(t *testing.T) {
 	}()
 
 	// 等到 model.bin.part 出现且已有数据。
+	// 注意：不能等「任意 .part 有数据」——config.json 等小文件会先下完并被
+	// 重命名成正式文件，此时 model.bin 可能还没开始，取消后自然没有 .part，
+	// 本用例就会随机失败。
 	dir := filepath.Join(f.root, "tiny")
+	modelPart := filepath.Join(dir, "model.bin.part")
 	waitFor(t, 5*time.Second, func() bool {
-		for _, p := range partFiles(t, dir) {
-			if info, err := os.Stat(p); err == nil && info.Size() > 0 {
-				return true
-			}
-		}
-		return false
+		info, err := os.Stat(modelPart)
+		return err == nil && info.Size() > 0
 	})
 
 	// 通过 Cancel(modelID) 取消，验证 sync.Map 中的取消函数生效。
@@ -849,40 +849,68 @@ func TestDefaultCatalogContainsCoreModels(t *testing.T) {
 	cat := DefaultCatalog()
 	want := map[string]bool{
 		"tiny": false, "base": false, "small": false, "medium": false, "large-v3": false,
+		"cohere-transcribe": false,
 	}
 	for _, e := range cat {
 		if _, ok := want[e.ID]; ok {
 			want[e.ID] = true
 		}
-		if e.Repo != "Systran/faster-whisper-"+e.ID {
-			t.Fatalf("%s 的仓库名不符合约定：%s", e.ID, e.Repo)
-		}
-		hasConfig, hasModel, hasTok, hasVocab := false, false, false, false
-		for _, f := range e.Files {
-			switch f.Path {
-			case "config.json":
-				hasConfig = true
-			case "model.bin":
-				hasModel = true
-			case "tokenizer.json":
-				hasTok = true
-			case "vocabulary.txt", "vocabulary.json":
-				hasVocab = true
+		switch e.Engine {
+		case EngineTransformers:
+			// transformers 格式：safetensors 权重，不需要 CTranslate2 的 model.bin。
+			hasConfig, hasModel, hasTokenizer := false, false, false
+			for _, f := range e.Files {
+				switch f.Path {
+				case "config.json":
+					hasConfig = true
+				case "model.safetensors":
+					hasModel = true
+				case "tokenizer.json", "tokenizer.model":
+					hasTokenizer = true
+				}
+				if f.Size <= 0 {
+					t.Fatalf("%s 的文件 %s 缺少大小", e.ID, f.Path)
+				}
 			}
-			if f.Size <= 0 {
-				t.Fatalf("%s 的文件 %s 缺少大小", e.ID, f.Path)
+			if !hasConfig || !hasModel || !hasTokenizer {
+				t.Fatalf("%s 文件清单不完整：config=%v model=%v tokenizer=%v",
+					e.ID, hasConfig, hasModel, hasTokenizer)
 			}
-		}
-		if !hasConfig || !hasModel || !hasTok || !hasVocab {
-			t.Fatalf("%s 文件清单不完整：config=%v model=%v tokenizer=%v vocab=%v",
-				e.ID, hasConfig, hasModel, hasTok, hasVocab)
-		}
-		required := map[string]bool{}
-		for _, r := range e.Required {
-			required[r] = true
-		}
-		if !required["config.json"] || !required["model.bin"] {
-			t.Fatalf("%s 的 Required 必须包含 config.json 与 model.bin", e.ID)
+			if e.Repo == "" {
+				t.Fatalf("%s 缺少下载仓库", e.ID)
+			}
+		default:
+			// faster-whisper 系列必须来自官方 CTranslate2 转换仓库。
+			if e.Repo != "Systran/faster-whisper-"+e.ID {
+				t.Fatalf("%s 的仓库名不符合约定：%s", e.ID, e.Repo)
+			}
+			hasConfig, hasModel, hasTok, hasVocab := false, false, false, false
+			for _, f := range e.Files {
+				switch f.Path {
+				case "config.json":
+					hasConfig = true
+				case "model.bin":
+					hasModel = true
+				case "tokenizer.json":
+					hasTok = true
+				case "vocabulary.txt", "vocabulary.json":
+					hasVocab = true
+				}
+				if f.Size <= 0 {
+					t.Fatalf("%s 的文件 %s 缺少大小", e.ID, f.Path)
+				}
+			}
+			if !hasConfig || !hasModel || !hasTok || !hasVocab {
+				t.Fatalf("%s 文件清单不完整：config=%v model=%v tokenizer=%v vocab=%v",
+					e.ID, hasConfig, hasModel, hasTok, hasVocab)
+			}
+			required := map[string]bool{}
+			for _, r := range e.Required {
+				required[r] = true
+			}
+			if !required["config.json"] || !required["model.bin"] {
+				t.Fatalf("%s 的 Required 必须包含 config.json 与 model.bin", e.ID)
+			}
 		}
 		if e.SizeBytes <= 0 {
 			t.Fatalf("%s 缺少 SizeBytes", e.ID)
@@ -895,9 +923,13 @@ func TestDefaultCatalogContainsCoreModels(t *testing.T) {
 	}
 }
 
-// large-v3 使用 vocabulary.json，其余使用 vocabulary.txt —— 与真实仓库一致。
+// large-v3 使用 vocabulary.json，其余 faster-whisper 模型使用 vocabulary.txt
+// —— 与真实仓库一致。transformers 格式的模型没有 CTranslate2 词表文件。
 func TestCatalogVocabularyFilesMatchRealRepos(t *testing.T) {
 	for _, e := range DefaultCatalog() {
+		if e.Engine == EngineTransformers {
+			continue
+		}
 		hasTxt, hasJSON := false, false
 		for _, f := range e.Files {
 			if f.Path == "vocabulary.txt" {

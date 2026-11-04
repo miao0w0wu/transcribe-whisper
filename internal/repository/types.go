@@ -92,6 +92,12 @@ type SettingsRecord struct {
 	TranslationStyle string
 	// Glossary 是术语表：源语言术语 -> 目标语言译法。
 	Glossary map[string]string
+	// LocalModels 是用户自选的本地识别模型：标识 -> 本地目录。
+	// 这些模型没有下载来源，重启后靠这里重新注册。
+	LocalModels map[string]string
+	// HuggingFaceToken 是绘制受限（gated）仓库时用的访问令牌。
+	// 只用于下载模型权重，不会发给翻译服务。
+	HuggingFaceToken string
 }
 
 // Store 封装数据库句柄。所有方法都要是并发安全的。
@@ -187,7 +193,9 @@ func (s *Store) migrate() error {
 			translation_api_key TEXT NOT NULL DEFAULT '',
 			cloud_privacy_confirm INTEGER NOT NULL DEFAULT 0,
 			translation_style TEXT NOT NULL DEFAULT 'subtitle',
-			glossary_json TEXT NOT NULL DEFAULT '{}'
+			glossary_json TEXT NOT NULL DEFAULT '{}',
+			local_models_json TEXT NOT NULL DEFAULT '{}',
+			hugging_face_token TEXT NOT NULL DEFAULT ''
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -223,10 +231,12 @@ func (s *Store) migrate() error {
 			}
 		}
 	}
-	// 设置表同样需要兼容旧库（术语表与风格是后续加入的列）。
+	// 设置表同样需要兼容旧库（术语表、风格与本地模型是后续加入的列）。
 	settingsColumns := map[string]string{
-		"translation_style": "TEXT NOT NULL DEFAULT 'subtitle'",
-		"glossary_json":     "TEXT NOT NULL DEFAULT '{}'",
+		"translation_style":  "TEXT NOT NULL DEFAULT 'subtitle'",
+		"glossary_json":      "TEXT NOT NULL DEFAULT '{}'",
+		"local_models_json":  "TEXT NOT NULL DEFAULT '{}'",
+		"hugging_face_token": "TEXT NOT NULL DEFAULT ''",
 	}
 	existingSettings, err := s.tableColumns("settings")
 	if err != nil {

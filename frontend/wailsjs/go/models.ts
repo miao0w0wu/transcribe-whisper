@@ -1,5 +1,35 @@
 export namespace main {
 	
+	export class AddLocalModelInput {
+	    directory: string;
+	    id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AddLocalModelInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.directory = source["directory"];
+	        this.id = source["id"];
+	    }
+	}
+	export class AddRepoModelInput {
+	    repo: string;
+	    id: string;
+	    engine: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AddRepoModelInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.repo = source["repo"];
+	        this.id = source["id"];
+	        this.engine = source["engine"];
+	    }
+	}
 	export class BurnSubtitlesInput {
 	    outputPath: string;
 	    fontName: string;
@@ -135,6 +165,8 @@ export namespace main {
 	    pythonOk: boolean;
 	    pythonDetail: string;
 	    fasterWhisper: boolean;
+	    transformers: boolean;
+	    transformersDetail: string;
 	    gpu: string;
 	    modelDir: string;
 	
@@ -152,6 +184,8 @@ export namespace main {
 	        this.pythonOk = source["pythonOk"];
 	        this.pythonDetail = source["pythonDetail"];
 	        this.fasterWhisper = source["fasterWhisper"];
+	        this.transformers = source["transformers"];
+	        this.transformersDetail = source["transformersDetail"];
 	        this.gpu = source["gpu"];
 	        this.modelDir = source["modelDir"];
 	    }
@@ -168,6 +202,11 @@ export namespace main {
 	    mirror: string;
 	    description: string;
 	    files: string[];
+	    engine: string;
+	    custom: boolean;
+	    gated: boolean;
+	    local: boolean;
+	    installedOk: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ModelInfo(source);
@@ -186,6 +225,33 @@ export namespace main {
 	        this.mirror = source["mirror"];
 	        this.description = source["description"];
 	        this.files = source["files"];
+	        this.engine = source["engine"];
+	        this.custom = source["custom"];
+	        this.gated = source["gated"];
+	        this.local = source["local"];
+	        this.installedOk = source["installedOk"];
+	    }
+	}
+	export class OllamaModelInfo {
+	    name: string;
+	    size: number;
+	    parameterSize: string;
+	    quantization: string;
+	    family: string;
+	    modifiedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OllamaModelInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.size = source["size"];
+	        this.parameterSize = source["parameterSize"];
+	        this.quantization = source["quantization"];
+	        this.family = source["family"];
+	        this.modifiedAt = source["modifiedAt"];
 	    }
 	}
 	export class SettingsPatch {
@@ -205,6 +271,7 @@ export namespace main {
 	    cloudPrivacyConfirm?: boolean;
 	    translationStyle?: string;
 	    glossaryText?: string;
+	    huggingFaceToken?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SettingsPatch(source);
@@ -228,6 +295,7 @@ export namespace main {
 	        this.cloudPrivacyConfirm = source["cloudPrivacyConfirm"];
 	        this.translationStyle = source["translationStyle"];
 	        this.glossaryText = source["glossaryText"];
+	        this.huggingFaceToken = source["huggingFaceToken"];
 	    }
 	}
 	export class SettingsSnapshot {
@@ -247,6 +315,8 @@ export namespace main {
 	    cloudPrivacyConfirm: boolean;
 	    translationStyle: string;
 	    glossaryText: string;
+	    huggingFaceTokenSet: boolean;
+	    localModels: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
 	        return new SettingsSnapshot(source);
@@ -270,6 +340,8 @@ export namespace main {
 	        this.cloudPrivacyConfirm = source["cloudPrivacyConfirm"];
 	        this.translationStyle = source["translationStyle"];
 	        this.glossaryText = source["glossaryText"];
+	        this.huggingFaceTokenSet = source["huggingFaceTokenSet"];
+	        this.localModels = source["localModels"];
 	    }
 	}
 	export class SubtitleSegment {

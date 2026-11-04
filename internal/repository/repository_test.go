@@ -702,6 +702,8 @@ func TestSettingsRoundTrip(t *testing.T) {
 		CloudPrivacyConfirm: true,
 		TranslationStyle:    "subtitle",
 		Glossary:            map[string]string{"API": "接口"},
+		LocalModels:         map[string]string{"my-local": `D:\models\my-local`},
+		HuggingFaceToken:    "hf_test_token",
 	}
 	if err := store.SaveSettings(ctx, want); err != nil {
 		t.Fatalf("保存设置失败: %v", err)

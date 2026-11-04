@@ -64,6 +64,9 @@ type Options struct {
 	MaxRetries int
 	// InUse 由调用方注入，用于删除保护：返回 true 表示该模型正在被任务使用。
 	InUse func(modelID string) bool
+	// Token 是 Hugging Face 访问令牌，用于下载 gated（受限）仓库。
+	// 为空时受限仓库会返回 403，此时应在界面上提示用户配置令牌。
+	Token string
 }
 
 // DefaultMirrors 返回默认镜像顺序：hf-mirror（国内可达）优先，官方 huggingface 兜底。
@@ -116,6 +119,7 @@ type ManagerImpl struct {
 	userAgent  string
 	maxRetries int
 	inUse      func(modelID string) bool
+	token      string
 
 	mu sync.RWMutex
 	// locks 保护同一模型的「检查是否已安装 + 下载」临界区。
@@ -124,6 +128,8 @@ type ManagerImpl struct {
 	files map[string]*fileRecord
 	// disabled 记录在本次会话中被判定不可用的镜像 ID。
 	disabled map[string]bool
+	// localDirs 记录用户自选本地模型的 ID -> 目录（见 local.go）。
+	localDirs map[string]string
 
 	cancels sync.Map // modelID(string) -> context.CancelFunc
 	states  sync.Map // modelID(string) -> *int32
@@ -136,9 +142,11 @@ func New(opts Options) *ManagerImpl {
 		userAgent:  strings.TrimSpace(opts.UserAgent),
 		maxRetries: opts.MaxRetries,
 		inUse:      opts.InUse,
+		token:      strings.TrimSpace(opts.Token),
 		locks:      make(map[string]*sync.Mutex),
 		files:      make(map[string]*fileRecord),
 		disabled:   make(map[string]bool),
+		localDirs:  make(map[string]string),
 	}
 	if m.rootDir == "" {
 		if dir, err := DefaultRootDir(); err == nil {
@@ -227,10 +235,17 @@ func (m *ManagerImpl) Find(modelID string) (CatalogEntry, bool) {
 //
 // 目录名采用 `<size>` 形式（tiny/base/small/medium/large-v3），与 faster-whisper
 // 的 model_size_or_path 参数完全一致，可直接传给 Python 侧。
+// 用户自选的本地模型直接返回其原始目录，不受 rootDir 影响。
 func (m *ManagerImpl) LocalDir(modelID string) string {
+	if dir := m.localDirOf(modelID); dir != "" {
+		return dir
+	}
 	entry, ok := m.Find(modelID)
 	if !ok {
 		return filepath.Join(m.rootDir, sanitizeDirName(modelID))
+	}
+	if dir := m.localDirOf(entry.ID); dir != "" {
+		return dir
 	}
 	return filepath.Join(m.rootDir, entry.ID)
 }
@@ -250,22 +265,35 @@ func sanitizeDirName(name string) string {
 	return name
 }
 
-// Installed 扫描根目录，返回「已安装」模型：ID -> 本地目录。
+// Installed 返回「已安装」模型：ID -> 本地目录。
 //
-// 只有清单 Required 中的文件全部存在才算已安装；非清单内但位于根目录下的
-// 目录会被忽略。扫描失败（根目录不可读）返回中文错误。
+// 两条来源：
+//  1. rootDir 下 Required 文件齐全的清单项；
+//  2. 用户自选的本地模型（目录不存在或已不成型时不算已安装）。
 func (m *ManagerImpl) Installed(ctx context.Context) (map[string]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	result := make(map[string]string)
+
+	// 先处理本地模型：它们不在 rootDir 下，不能靠扫描目录发现。
+	for id, dir := range m.LocalDirs() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if _, _, detectErr := DetectLocalModel(dir); detectErr == nil {
+			result[id] = dir
+		}
+	}
+
 	entries, err := os.ReadDir(m.rootDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return map[string]string{}, nil
+			// 根目录还没建：本地模型结果照常返回。
+			return result, nil
 		}
 		return nil, fmt.Errorf("读取模型目录失败：%w", err)
 	}
-	result := make(map[string]string)
 	for _, de := range entries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -279,7 +307,7 @@ func (m *ManagerImpl) Installed(ctx context.Context) (map[string]string, error) 
 			continue
 		}
 		entry, ok := m.Find(name)
-		if !ok {
+		if !ok || entry.Custom {
 			continue
 		}
 		dir := filepath.Join(m.rootDir, entry.ID)
@@ -314,6 +342,20 @@ func (m *ManagerImpl) Ensure(ctx context.Context, modelID string, progress Progr
 	if !ok {
 		return "", fmt.Errorf("未知的模型：%q，可用模型：%s", modelID, strings.Join(modelIDs(m.Catalog()), "、"))
 	}
+
+	// 用户自选的本地模型：不下载，直接返回其原始目录。
+	// 目录可能已被用户移动或删除，这里每次都用 DetectLocalModel 复查一遍。
+	if entry.Custom {
+		if err := m.validateLocalRegistered(entry); err != nil {
+			return "", err
+		}
+		dir := m.localDirOf(entry.ID)
+		if progress != nil {
+			progress(1, "使用本地模型目录")
+		}
+		return dir, nil
+	}
+
 	dir := filepath.Join(m.rootDir, entry.ID)
 
 	if m.isInstalled(entry, dir) {
@@ -744,6 +786,10 @@ func (m *ManagerImpl) decorate(req *http.Request) {
 	}
 	// 接受压缩会让 Content-Length 失真；这里显式禁用，保证字节数就是文件大小。
 	req.Header.Set("Accept-Encoding", "identity")
+	// 受限（gated）仓库需要带访问令牌，否则镜像站直接返回 403。
+	if token := strings.TrimSpace(m.token); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 }
 
 // usableMirrors 返回当前会话中尚未被判定为不可用的镜像；全被禁用时回退为全量列表。

@@ -84,6 +84,39 @@ export interface ModelInfo {
   mirror: string;
   description: string;
   files: string[];
+  /** 适用的识别引擎：faster-whisper 或 transformers */
+  engine: string;
+  /** 用户自选 / 自建条目，不是内置模型 */
+  custom: boolean;
+  /** Hugging Face 受限仓库，下载需要访问令牌 */
+  gated: boolean;
+  /** 本地目录模型：不下载、不删除 */
+  local: boolean;
+  /** 本地模型目录是否可用（目录被移动时为 false） */
+  installedOk: boolean;
+}
+
+/** 自选本地模型入参 */
+export interface AddLocalModelInput {
+  directory: string;
+  id: string;
+}
+
+/** 按链接添加模型入参 */
+export interface AddRepoModelInput {
+  repo: string;
+  id: string;
+  engine: string;
+}
+
+/** 本机 Ollama 中已安装的一个模型 */
+export interface OllamaModelInfo {
+  name: string;
+  size: number;
+  parameterSize: string;
+  quantization: string;
+  family: string;
+  modifiedAt: string;
 }
 
 /** 设置快照（API Key 只返回是否已配置） */
@@ -102,10 +135,14 @@ export interface SettingsSnapshot {
   translationModel: string;
   translationApiKeySet: boolean;
   cloudPrivacyConfirm: boolean;
-  /** 翻译语气：subtitle / formal / casual / literal */
+  /** 翻译语气：subtitle / formal / casual / literal / explicit */
   translationStyle: string;
   /** 术语表原文，每行一条：源术语=目标译法 */
   glossaryText: string;
+  /** 是否已配置 Hugging Face 访问令牌（不返回明文） */
+  huggingFaceTokenSet: boolean;
+  /** 自选的本地识别模型：标识 -> 目录 */
+  localModels: Record<string, string>;
 }
 
 /** 设置的部分更新入参，未给出的字段表示保持不变 */
@@ -126,6 +163,8 @@ export interface SettingsPatch {
   cloudPrivacyConfirm?: boolean;
   translationStyle?: string;
   glossaryText?: string;
+  /** HF 访问令牌；空串表示保持不变，"-" 表示清除 */
+  huggingFaceToken?: string;
 }
 
 /** 字幕压制入参 */
@@ -147,6 +186,8 @@ export interface EnvironmentStatus {
   pythonOk: boolean;
   pythonDetail: string;
   fasterWhisper: boolean;
+  /** 是否安装了 torch + transformers（cohere 等模型需要） */
+  transformers: boolean;
   gpu: string;
   modelDir: string;
 }
@@ -231,9 +272,14 @@ export const TRANSLATION_PROVIDERS: { value: string; label: string; hint: string
 ];
 
 /** 翻译语气选项 */
-export const TRANSLATION_STYLES: { value: string; label: string }[] = [
+export const TRANSLATION_STYLES: { value: string; label: string; hint?: string }[] = [
   { value: 'subtitle', label: '影视字幕（简洁口语）' },
   { value: 'formal', label: '正式书面' },
   { value: 'casual', label: '轻松口语' },
   { value: 'literal', label: '直译（贴近原文）' },
+  {
+    value: 'explicit',
+    label: '露骨（成人内容）',
+    hint: '面向成人影音：直白翻译性相关内容，不淡化、不净化、不回避',
+  },
 ];

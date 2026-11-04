@@ -186,7 +186,13 @@ func (a *App) bootstrap(ctx context.Context) {
 		settings.FFmpegPath = selectedFFmpeg.Path()
 	}
 
-	engine := asr.NewFasterWhisperEngine()
+	// 两个识别引擎：faster-whisper 加载 CTranslate2 模型，transformers 加载
+	// safetensors 模型（如 cohere-transcribe）。任务按模型格式自动路由。
+	fasterWhisper := asr.NewFasterWhisperEngine()
+	transformersEngine := asr.NewTransformersEngine()
+	fasterWhisper.PythonPath = settings.PythonPath
+	transformersEngine.PythonPath = settings.PythonPath
+	engine := fasterWhisper
 
 	models := modelmanager.New(modelmanager.Options{
 		RootDir:   modelDir,
@@ -194,17 +200,21 @@ func (a *App) bootstrap(ctx context.Context) {
 		InUse:     a.modelInUse,
 		Catalog:   modelmanager.DefaultCatalog(),
 		UserAgent: "transcribe-whisper/1.0",
+		Token:     settings.HuggingFaceToken,
 	})
+	// 自选本地模型在启动时重新注册，避免重启后丢失。
+	registerLocalModels(models, settings)
 
 	queue := service.NewQueue(service.Deps{
-		Store:       store,
-		Media:       selectedFFmpeg,
-		Burner:      selectedFFmpeg,
-		Engine:      engine,
-		Resolver:    service.ManagerAdapter{Manager: models},
-		Translator:  translationFactory{settings: func() repository.SettingsRecord { return a.currentSettings() }},
-		Emitters:    []service.Emitter{a.emitTask},
-		WorkDir:     filepath.Join(dataDir, "work"),
+		Store:      store,
+		Media:      selectedFFmpeg,
+		Burner:     selectedFFmpeg,
+		Engine:     engine,
+		Engines:    newEngineSelector(models, fasterWhisper, transformersEngine),
+		Resolver:   service.ManagerAdapter{Manager: models},
+		Translator: translationFactory{settings: func() repository.SettingsRecord { return a.currentSettings() }},
+		Emitters:   []service.Emitter{a.emitTask},
+		WorkDir:    filepath.Join(dataDir, "work"),
 		Concurrency: 1,
 		Settings: func(ctx context.Context) (repository.SettingsRecord, error) {
 			return a.currentSettings(), nil
@@ -242,6 +252,51 @@ func asrScriptPath(dataDir string) string {
 // 说明：真实链路中脚本由 asr 包内嵌并在首次运行时释放到缓存目录，
 // 用户可通过设置里的 Python 路径指定解释器。
 var _ = asrScriptPath
+
+// newEngineSelector 构造按模型格式路由的引擎选择器。
+//
+// Lookup 返回模型清单里的 Engine 字段：cohere-transcribe 是 transformers，
+// 其余是 faster-whisper。模型不在清单里（含尚未注册的自选本地模型）时
+// 返回空串，由 prefer / Fallback 决定。
+func newEngineSelector(models *modelmanager.ManagerImpl, fasterWhisper, transformersEngine asr.Engine) service.EngineSelector {
+	return service.StaticEngineSelector{
+		Fallback: fasterWhisper,
+		Engines: map[string]asr.Engine{
+			modelmanager.EngineFasterWhisper: fasterWhisper,
+			modelmanager.EngineTransformers:  transformersEngine,
+		},
+		Lookup: func(modelID string) string {
+			if models == nil || strings.TrimSpace(modelID) == "" {
+				return ""
+			}
+			if entry, ok := models.Find(modelID); ok {
+				if entry.Engine != "" {
+					return entry.Engine
+				}
+				return modelmanager.EngineFasterWhisper
+			}
+			return ""
+		},
+	}
+}
+
+// registerLocalModels 把设置里记录的自选本地模型重新注册到模型管理器。
+//
+// 自选模型没有下载来源，注册信息只存在于设置里（id -> 目录）。重启后必须
+// 重新 AddLocalModel，否则任务会因为「未知的模型」失败。
+func registerLocalModels(models *modelmanager.ManagerImpl, settings repository.SettingsRecord) {
+	if models == nil {
+		return
+	}
+	for id, dir := range settings.LocalModels {
+		if strings.TrimSpace(id) == "" || strings.TrimSpace(dir) == "" {
+			continue
+		}
+		if _, err := models.AddLocalModel(id, dir); err != nil {
+			log.Printf("恢复本地模型 %q（%s）失败: %v", id, dir, err)
+		}
+	}
+}
 
 // mirrorsFor 根据设置生成镜像候选列表。
 func mirrorsFor(mirror, endpoint string) []modelmanager.Mirror {

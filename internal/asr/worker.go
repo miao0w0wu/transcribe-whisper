@@ -25,12 +25,17 @@ const (
 	fasterWhisperScriptName = "transcribe_worker.py"
 	// funASRScriptName 是 FunASR 工作脚本的文件名。
 	funASRScriptName = "funasr_worker.py"
+	// transformersScriptName 是 transformers 工作脚本的文件名。
+	transformersScriptName = "transformers_worker.py"
 	// stderrLimit 是附加到错误信息中的 stderr 最大字符数。
 	stderrLimit = 2000
 	// defaultSegmentTimeout 是单次识别的默认超时时间（秒）。
 	defaultSegmentTimeout = 6 * 60 * 60
 	// probeTimeout 是引擎可用性检查的默认超时时间。
 	probeTimeout = 60 * time.Second
+	// transformersProbeTimeout 是 transformers 引擎可用性检查的超时。
+	// 首次 import torch 明显比 faster-whisper 慢，需要更宽的窗口。
+	transformersProbeTimeout = 120 * time.Second
 )
 
 // engineScripts 把 Python 工作脚本嵌入二进制，避免安装时漏拷脚本。
