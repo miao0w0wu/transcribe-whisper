@@ -11,3 +11,5 @@ export function GetDashboard():Promise<main.Dashboard>;
 export function ListSubtitles(arg1:string):Promise<Array<main.SubtitleSegment>>;
 
 export function StartTask(arg1:string):Promise<main.Task>;
+
+export function UpdateSubtitles(arg1:string,arg2:Array<main.SubtitleSegment>):Promise<void>;

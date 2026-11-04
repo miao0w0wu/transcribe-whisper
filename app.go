@@ -116,6 +116,20 @@ func (a *App) openDatabase(path string) error {
 		_ = db.Close()
 		return err
 	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS subtitle_segments (
+		id TEXT PRIMARY KEY,
+		task_id TEXT NOT NULL,
+		sequence INTEGER NOT NULL,
+		start_time REAL NOT NULL,
+		end_time REAL NOT NULL,
+		source_text TEXT NOT NULL,
+		translated_text TEXT NOT NULL,
+		translation_status TEXT NOT NULL,
+		FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+	)`); err != nil {
+		_ = db.Close()
+		return err
+	}
 	rows, err := db.Query(`SELECT id, name, source_file, source_language, target_language, status, progress, current_stage, subtitle_count, created_at FROM tasks ORDER BY created_at DESC`)
 	if err != nil {
 		_ = db.Close()
@@ -201,6 +215,21 @@ func (a *App) CreateTask(input CreateTaskInput) (*Task, error) {
 		a.mu.Unlock()
 		return nil, fmt.Errorf("save task: %w", err)
 	}
+	for _, segment := range demoSubtitles() {
+		if _, err := a.db.Exec(`INSERT INTO subtitle_segments (id, task_id, sequence, start_time, end_time, source_text, translated_text, translation_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			segment.ID, task.ID, segment.Sequence, segment.Start, segment.End, segment.SourceText, segment.Translated, segment.Status); err != nil {
+			_, _ = a.db.Exec(`DELETE FROM tasks WHERE id = ?`, task.ID)
+			delete(a.tasks, task.ID)
+			a.mu.Unlock()
+			return nil, fmt.Errorf("save subtitles: %w", err)
+		}
+	}
+	task.SubtitleCount = len(demoSubtitles())
+	if _, err := a.db.Exec(`UPDATE tasks SET subtitle_count = ? WHERE id = ?`, task.SubtitleCount, task.ID); err != nil {
+		delete(a.tasks, task.ID)
+		a.mu.Unlock()
+		return nil, fmt.Errorf("save subtitle count: %w", err)
+	}
 	a.mu.Unlock()
 	return task, nil
 }
@@ -224,12 +253,66 @@ func (a *App) StartTask(taskID string) (*Task, error) {
 }
 
 func (a *App) ListSubtitles(taskID string) ([]SubtitleSegment, error) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if _, ok := a.tasks[strings.TrimSpace(taskID)]; !ok {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	taskID = strings.TrimSpace(taskID)
+	if _, ok := a.tasks[taskID]; !ok {
 		return nil, errors.New("task not found")
 	}
-	return demoSubtitles(), nil
+	rows, err := a.db.Query(`SELECT id, sequence, start_time, end_time, source_text, translated_text, translation_status FROM subtitle_segments WHERE task_id = ? ORDER BY sequence`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list subtitles: %w", err)
+	}
+	defer rows.Close()
+	segments := make([]SubtitleSegment, 0)
+	for rows.Next() {
+		var segment SubtitleSegment
+		if err := rows.Scan(&segment.ID, &segment.Sequence, &segment.Start, &segment.End, &segment.SourceText, &segment.Translated, &segment.Status); err != nil {
+			return nil, fmt.Errorf("read subtitles: %w", err)
+		}
+		segments = append(segments, segment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read subtitles: %w", err)
+	}
+	return segments, nil
+}
+
+func (a *App) UpdateSubtitles(taskID string, segments []SubtitleSegment) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	taskID = strings.TrimSpace(taskID)
+	if _, ok := a.tasks[taskID]; !ok {
+		return errors.New("task not found")
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return fmt.Errorf("start subtitle update: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM subtitle_segments WHERE task_id = ?`, taskID); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("clear subtitles: %w", err)
+	}
+	for _, segment := range segments {
+		if strings.TrimSpace(segment.ID) == "" || segment.Sequence < 1 || segment.End < segment.Start || segment.Start < 0 {
+			_ = tx.Rollback()
+			return errors.New("subtitle segment is invalid")
+		}
+		if _, err := tx.Exec(`INSERT INTO subtitle_segments (id, task_id, sequence, start_time, end_time, source_text, translated_text, translation_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			segment.ID, taskID, segment.Sequence, segment.Start, segment.End, segment.SourceText, segment.Translated, segment.Status); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("save subtitle segment: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit subtitles: %w", err)
+	}
+	task := a.tasks[taskID]
+	task.SubtitleCount = len(segments)
+	if _, err := a.db.Exec(`UPDATE tasks SET subtitle_count = ? WHERE id = ?`, task.SubtitleCount, taskID); err != nil {
+		return fmt.Errorf("save subtitle count: %w", err)
+	}
+	return nil
 }
 
 func (a *App) ExportSubtitles(taskID string, format string) (string, error) {

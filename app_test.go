@@ -74,4 +74,33 @@ func TestTasksPersistAcrossAppInstances(t *testing.T) {
 	if dashboard.ActiveTask == nil || dashboard.ActiveTask.ID != task.ID || dashboard.ActiveTask.Status != "transcribing" {
 		t.Fatalf("task was not restored: %+v", dashboard)
 	}
+	segments, err := second.ListSubtitles(task.ID)
+	if err != nil {
+		t.Fatalf("list restored subtitles: %v", err)
+	}
+	if len(segments) != 3 || segments[0].Translated != "欢迎来到本教程。" {
+		t.Fatalf("subtitles were not restored: %+v", segments)
+	}
+}
+
+func TestUpdateSubtitles(t *testing.T) {
+	app := NewApp()
+	task, err := app.CreateTask(CreateTaskInput{SourceFile: `D:\Media\episode.mp4`})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	segments := []SubtitleSegment{{
+		ID: "edited-001", Sequence: 1, Start: 1.25, End: 3.5,
+		SourceText: "Edited source", Translated: "编辑后的译文", Status: "translated",
+	}}
+	if err := app.UpdateSubtitles(task.ID, segments); err != nil {
+		t.Fatalf("update subtitles: %v", err)
+	}
+	got, err := app.ListSubtitles(task.ID)
+	if err != nil {
+		t.Fatalf("list updated subtitles: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "edited-001" {
+		t.Fatalf("unexpected updated subtitles: %+v", got)
+	}
 }

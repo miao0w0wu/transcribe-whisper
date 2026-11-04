@@ -21,3 +21,7 @@ export function ListSubtitles(arg1) {
 export function StartTask(arg1) {
   return window['go']['main']['App']['StartTask'](arg1);
 }
+
+export function UpdateSubtitles(arg1, arg2) {
+  return window['go']['main']['App']['UpdateSubtitles'](arg1, arg2);
+}
