@@ -2,359 +2,382 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"fmt"
 	"log"
-	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/google/uuid"
-	_ "modernc.org/sqlite"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"transcribe-whisper/internal/asr"
+	"transcribe-whisper/internal/media"
+	"transcribe-whisper/internal/modelmanager"
+	"transcribe-whisper/internal/repository"
+	"transcribe-whisper/internal/service"
+	"transcribe-whisper/internal/translation"
 )
 
+// 事件名，前端通过 EventsOn 订阅。
+const (
+	eventTaskProgress  = "task:progress"
+	eventModelProgress = "model:progress"
+)
+
+// App 是 Wails Binding 主体，只做参数校验、领域调用与结果映射。
 type App struct {
-	ctx   context.Context
-	mu    sync.RWMutex
-	tasks map[string]*Task
-	db    *sql.DB
+	ctx context.Context
+
+	mu       sync.RWMutex
+	db       *database
+	store    *repository.Store
+	queue    *service.Queue
+	models   *modelmanager.ManagerImpl
+	media    *media.FFmpeg
+	engine   asr.Engine
+	dataDir  string
+	settings repository.SettingsRecord
+	// tempDataDir 表示数据目录是测试临时目录，shutdown 时要清理。
+	tempDataDir bool
 }
 
-type Task struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	SourceFile     string `json:"sourceFile"`
-	SourceLanguage string `json:"sourceLanguage"`
-	TargetLanguage string `json:"targetLanguage"`
-	Status         string `json:"status"`
-	Progress       int    `json:"progress"`
-	CurrentStage   string `json:"currentStage"`
-	SubtitleCount  int    `json:"subtitleCount"`
-	CreatedAt      string `json:"createdAt"`
+// database 包装连接句柄，保留旧版本 openDatabase 语义以便测试。
+type database struct {
+	store *repository.Store
+	path  string
 }
 
-type CreateTaskInput struct {
-	SourceFile     string `json:"sourceFile"`
-	SourceLanguage string `json:"sourceLanguage"`
-	TargetLanguage string `json:"targetLanguage"`
-	OutputFormat   string `json:"outputFormat"`
-}
-
-type Dashboard struct {
-	ActiveTask *Task   `json:"activeTask"`
-	Tasks      []*Task `json:"tasks"`
-}
-
-type SubtitleSegment struct {
-	ID         string  `json:"id"`
-	Sequence   int     `json:"sequence"`
-	Start      float64 `json:"start"`
-	End        float64 `json:"end"`
-	SourceText string  `json:"sourceText"`
-	Translated string  `json:"translatedText"`
-	Status     string  `json:"translationStatus"`
-}
-
+// NewApp 构造应用实例。
+//
+// 它只在测试里使用：数据目录指向系统临时目录，避免读取或写入用户的
+// 真实配置（模型目录、设置），保证测试之间以及测试与真实安装互不污染。
+// 真实应用走 startup，由 Wails 调用。
 func NewApp() *App {
-	app := &App{tasks: make(map[string]*Task)}
+	app := &App{}
+	if dir, err := os.MkdirTemp("", "transcribe-whisper-app-*"); err == nil {
+		app.dataDir = dir
+		app.tempDataDir = true
+	}
 	if err := app.openDatabase(":memory:"); err != nil {
 		panic(err)
 	}
 	return app
 }
 
+// startup 由 Wails 调用，负责打开真实数据库并装配依赖。
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	configDir, err := os.UserConfigDir()
 	if err != nil {
-		log.Printf("cannot locate application config directory: %v", err)
+		log.Printf("无法定位应用配置目录: %v", err)
 		return
 	}
-	databasePath := filepath.Join(configDir, "transcribe-whisper", "transcribe-whisper.db")
-	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
-		log.Printf("cannot create application data directory: %v", err)
+	a.dataDir = filepath.Join(configDir, "transcribe-whisper")
+	if err := os.MkdirAll(a.dataDir, 0o700); err != nil {
+		log.Printf("无法创建应用数据目录: %v", err)
 		return
 	}
+	databasePath := filepath.Join(a.dataDir, "transcribe-whisper.db")
 	if err := a.openDatabase(databasePath); err != nil {
-		log.Printf("cannot open task database: %v", err)
+		log.Printf("无法打开任务数据库: %v", err)
 		return
 	}
 }
 
+// shutdown 关闭数据库与后台任务，并清理测试用的临时目录。
 func (a *App) shutdown(ctx context.Context) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.db != nil {
-		if err := a.db.Close(); err != nil {
-			log.Printf("close task database: %v", err)
+	queue := a.queue
+	store := a.store
+	a.queue = nil
+	a.store = nil
+	a.mu.Unlock()
+
+	if queue != nil {
+		queue.Close()
+	}
+	if store != nil {
+		if err := store.Close(); err != nil {
+			log.Printf("关闭任务数据库失败: %v", err)
 		}
-		a.db = nil
+	}
+
+	a.mu.RLock()
+	tempDir := a.dataDir
+	isTemp := a.tempDataDir
+	a.mu.RUnlock()
+	if isTemp && tempDir != "" {
+		_ = os.RemoveAll(tempDir)
 	}
 }
 
+// openDatabase 打开数据库并刷新依赖，测试会直接调用它。
 func (a *App) openDatabase(path string) error {
-	db, err := sql.Open("sqlite", path)
+	store, err := repository.Open(path)
 	if err != nil {
 		return err
 	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS tasks (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		source_file TEXT NOT NULL,
-		source_language TEXT NOT NULL,
-		target_language TEXT NOT NULL,
-		status TEXT NOT NULL,
-		progress INTEGER NOT NULL DEFAULT 0,
-		current_stage TEXT NOT NULL,
-		subtitle_count INTEGER NOT NULL DEFAULT 0,
-		created_at TEXT NOT NULL
-	)`); err != nil {
-		_ = db.Close()
-		return err
-	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS subtitle_segments (
-		id TEXT PRIMARY KEY,
-		task_id TEXT NOT NULL,
-		sequence INTEGER NOT NULL,
-		start_time REAL NOT NULL,
-		end_time REAL NOT NULL,
-		source_text TEXT NOT NULL,
-		translated_text TEXT NOT NULL,
-		translation_status TEXT NOT NULL,
-		FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
-	)`); err != nil {
-		_ = db.Close()
-		return err
-	}
-	rows, err := db.Query(`SELECT id, name, source_file, source_language, target_language, status, progress, current_stage, subtitle_count, created_at FROM tasks ORDER BY created_at DESC`)
-	if err != nil {
-		_ = db.Close()
-		return err
-	}
-	defer rows.Close()
-	loaded := make(map[string]*Task)
-	for rows.Next() {
-		task := &Task{}
-		if err := rows.Scan(&task.ID, &task.Name, &task.SourceFile, &task.SourceLanguage, &task.TargetLanguage, &task.Status, &task.Progress, &task.CurrentStage, &task.SubtitleCount, &task.CreatedAt); err != nil {
-			_ = db.Close()
-			return err
-		}
-		loaded[task.ID] = task
-	}
-	if err := rows.Err(); err != nil {
-		_ = db.Close()
-		return err
-	}
+
 	a.mu.Lock()
-	if a.db != nil && a.db != db {
-		_ = a.db.Close()
-	}
-	a.db = db
-	a.tasks = loaded
+	old := a.db
+	a.db = &database{store: store, path: path}
+	a.store = store
 	a.mu.Unlock()
+	if old != nil {
+		_ = old.store.Close()
+	}
+	a.bootstrap(context.Background())
 	return nil
 }
 
-func (a *App) GetDashboard() Dashboard {
+// bootstrap 装配下游服务与任务队列。
+func (a *App) bootstrap(ctx context.Context) {
+	store := a.store
+	if store == nil {
+		return
+	}
+
+	a.mu.RLock()
+	dataDir := a.dataDir
+	existingQueue := a.queue
+	a.mu.RUnlock()
+	if dataDir == "" {
+		if dir, err := os.UserConfigDir(); err == nil {
+			dataDir = filepath.Join(dir, "transcribe-whisper")
+		}
+	}
+
+	settings, err := store.LoadSettings(ctx)
+	if err != nil {
+		log.Printf("读取设置失败: %v", err)
+		settings = service.SettingsDefaults("")
+	}
+
+	modelDir := strings.TrimSpace(settings.ModelDir)
+	if modelDir == "" {
+		modelDir = filepath.Join(dataDir, "models")
+		settings.ModelDir = modelDir
+	}
+
+	ffmpeg, err := media.New(settings.FFmpegPath)
+	if err != nil {
+		log.Printf("未找到 FFmpeg: %v", err)
+		ffmpeg, _ = media.New("ffmpeg")
+	}
+
+	engine := asr.NewFasterWhisperEngine()
+
+	models := modelmanager.New(modelmanager.Options{
+		RootDir:   modelDir,
+		Mirrors:   mirrorsFor(settings.Mirror, settings.HuggingFaceEndpoint),
+		InUse:     a.modelInUse,
+		Catalog:   modelmanager.DefaultCatalog(),
+		UserAgent: "transcribe-whisper/1.0",
+	})
+
+	queue := service.NewQueue(service.Deps{
+		Store:       store,
+		Media:       ffmpeg,
+		Engine:      engine,
+		Resolver:    service.ManagerAdapter{Manager: models},
+		Translator:  translationFactory{settings: func() repository.SettingsRecord { return a.currentSettings() }},
+		Emitters:    []service.Emitter{a.emitTask},
+		WorkDir:     filepath.Join(dataDir, "work"),
+		Concurrency: 1,
+		Settings: func(ctx context.Context) (repository.SettingsRecord, error) {
+			return a.currentSettings(), nil
+		},
+	})
+	if interrupted, err := queue.Recover(ctx); err != nil {
+		log.Printf("清理中断任务失败: %v", err)
+	} else if interrupted > 0 {
+		log.Printf("已将 %d 个中断任务标记为失败", interrupted)
+	}
+
+	a.mu.Lock()
+	a.settings = settings
+	a.store = store
+	a.media = ffmpeg
+	a.engine = engine
+	a.models = models
+	a.queue = queue
+	a.mu.Unlock()
+
+	if existingQueue != nil {
+		existingQueue.Close()
+	}
+}
+
+// asrScriptPath 返回外部 ASR 脚本路径（供用户自行替换），默认由引擎内嵌。
+// 保留该函数以便设置页展示脚本位置。
+func asrScriptPath(dataDir string) string {
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, "scripts", "transcribe_worker.py")
+}
+
+// 说明：真实链路中脚本由 asr 包内嵌并在首次运行时释放到缓存目录，
+// 用户可通过设置里的 Python 路径指定解释器。
+var _ = asrScriptPath
+
+// mirrorsFor 根据设置生成镜像候选列表。
+func mirrorsFor(mirror, endpoint string) []modelmanager.Mirror {
+	mirrors := make([]modelmanager.Mirror, 0, 3)
+	normalized := strings.ToLower(strings.TrimSpace(mirror))
+	if normalized == "custom" && strings.TrimSpace(endpoint) != "" {
+		mirrors = append(mirrors, modelmanager.Mirror{ID: "custom", Label: "自定义端点", BaseURL: strings.TrimRight(strings.TrimSpace(endpoint), "/")})
+	}
+	if normalized == "huggingface" {
+		mirrors = append(mirrors,
+			modelmanager.Mirror{ID: "huggingface", Label: "Hugging Face", BaseURL: "https://huggingface.co"},
+			modelmanager.Mirror{ID: "hf-mirror", Label: "国内镜像", BaseURL: "https://hf-mirror.com"},
+		)
+		return mirrors
+	}
+	mirrors = append(mirrors,
+		modelmanager.Mirror{ID: "hf-mirror", Label: "国内镜像", BaseURL: "https://hf-mirror.com"},
+		modelmanager.Mirror{ID: "huggingface", Label: "Hugging Face", BaseURL: "https://huggingface.co"},
+	)
+	if strings.TrimSpace(endpoint) != "" && normalized != "custom" {
+		mirrors = append(mirrors, modelmanager.Mirror{ID: "custom", Label: "自定义端点", BaseURL: strings.TrimRight(strings.TrimSpace(endpoint), "/")})
+	}
+	return mirrors
+}
+
+// currentSettings 返回当前设置快照。
+func (a *App) currentSettings() repository.SettingsRecord {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-
-	tasks := make([]*Task, 0, len(a.tasks))
-	var active *Task
-	for _, task := range a.tasks {
-		copy := *task
-		tasks = append(tasks, &copy)
-		if active == nil && task.Status != "completed" {
-			active = &copy
-		}
-	}
-	return Dashboard{ActiveTask: active, Tasks: tasks}
+	return a.settings
 }
 
-func (a *App) CreateTask(input CreateTaskInput) (*Task, error) {
-	sourceFile := strings.TrimSpace(input.SourceFile)
-	if sourceFile == "" {
-		return nil, errors.New("source file is required")
+// modelInUse 判断模型是否正被任务使用。
+func (a *App) modelInUse(modelID string) bool {
+	a.mu.RLock()
+	store := a.store
+	queue := a.queue
+	a.mu.RUnlock()
+	if store == nil {
+		return false
 	}
-
-	name := strings.TrimSpace(filepath.Base(sourceFile))
-	if name == "." || name == string(filepath.Separator) {
-		return nil, errors.New("source file name is invalid")
-	}
-
-	sourceLanguage := strings.TrimSpace(input.SourceLanguage)
-	if sourceLanguage == "" {
-		sourceLanguage = "auto"
-	}
-	targetLanguage := strings.TrimSpace(input.TargetLanguage)
-	if targetLanguage == "" {
-		targetLanguage = "zh-CN"
-	}
-
-	task := &Task{
-		ID:             uuid.NewString(),
-		Name:           strings.TrimSuffix(name, filepath.Ext(name)),
-		SourceFile:     sourceFile,
-		SourceLanguage: sourceLanguage,
-		TargetLanguage: targetLanguage,
-		Status:         "created",
-		CurrentStage:   "等待识别",
-		SubtitleCount:  0,
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
-	}
-
-	a.mu.Lock()
-	a.tasks[task.ID] = task
-	if _, err := a.db.Exec(`INSERT INTO tasks (id, name, source_file, source_language, target_language, status, progress, current_stage, subtitle_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		task.ID, task.Name, task.SourceFile, task.SourceLanguage, task.TargetLanguage, task.Status, task.Progress, task.CurrentStage, task.SubtitleCount, task.CreatedAt); err != nil {
-		delete(a.tasks, task.ID)
-		a.mu.Unlock()
-		return nil, fmt.Errorf("save task: %w", err)
-	}
-	for _, segment := range demoSubtitles() {
-		if _, err := a.db.Exec(`INSERT INTO subtitle_segments (id, task_id, sequence, start_time, end_time, source_text, translated_text, translation_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			segment.ID, task.ID, segment.Sequence, segment.Start, segment.End, segment.SourceText, segment.Translated, segment.Status); err != nil {
-			_, _ = a.db.Exec(`DELETE FROM tasks WHERE id = ?`, task.ID)
-			delete(a.tasks, task.ID)
-			a.mu.Unlock()
-			return nil, fmt.Errorf("save subtitles: %w", err)
-		}
-	}
-	task.SubtitleCount = len(demoSubtitles())
-	if _, err := a.db.Exec(`UPDATE tasks SET subtitle_count = ? WHERE id = ?`, task.SubtitleCount, task.ID); err != nil {
-		delete(a.tasks, task.ID)
-		a.mu.Unlock()
-		return nil, fmt.Errorf("save subtitle count: %w", err)
-	}
-	a.mu.Unlock()
-	return task, nil
-}
-
-func (a *App) StartTask(taskID string) (*Task, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	task, ok := a.tasks[strings.TrimSpace(taskID)]
-	if !ok {
-		return nil, errors.New("task not found")
-	}
-	task.Status = "transcribing"
-	task.CurrentStage = "正在识别"
-	task.Progress = 8
-	if _, err := a.db.Exec(`UPDATE tasks SET status = ?, progress = ?, current_stage = ? WHERE id = ?`, task.Status, task.Progress, task.CurrentStage, task.ID); err != nil {
-		return nil, fmt.Errorf("save task status: %w", err)
-	}
-	copy := *task
-	return &copy, nil
-}
-
-func (a *App) ListSubtitles(taskID string) ([]SubtitleSegment, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	taskID = strings.TrimSpace(taskID)
-	if _, ok := a.tasks[taskID]; !ok {
-		return nil, errors.New("task not found")
-	}
-	rows, err := a.db.Query(`SELECT id, sequence, start_time, end_time, source_text, translated_text, translation_status FROM subtitle_segments WHERE task_id = ? ORDER BY sequence`, taskID)
+	tasks, err := store.ListTasks(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("list subtitles: %w", err)
+		return true
 	}
-	defer rows.Close()
-	segments := make([]SubtitleSegment, 0)
-	for rows.Next() {
-		var segment SubtitleSegment
-		if err := rows.Scan(&segment.ID, &segment.Sequence, &segment.Start, &segment.End, &segment.SourceText, &segment.Translated, &segment.Status); err != nil {
-			return nil, fmt.Errorf("read subtitles: %w", err)
+	for _, task := range tasks {
+		if task.Model != modelID {
+			continue
 		}
-		segments = append(segments, segment)
+		switch task.Status {
+		case repository.TaskStatusExtracting, repository.TaskStatusTranscribing, repository.TaskStatusTranslating, repository.TaskStatusQueued:
+			return true
+		}
+		if queue != nil && queue.Running(task.ID) {
+			return true
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read subtitles: %w", err)
-	}
-	return segments, nil
+	return false
 }
 
-func (a *App) UpdateSubtitles(taskID string, segments []SubtitleSegment) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	taskID = strings.TrimSpace(taskID)
-	if _, ok := a.tasks[taskID]; !ok {
-		return errors.New("task not found")
+// emitTask 把任务状态映射成进度事件推送到前端。
+func (a *App) emitTask(ctx context.Context, rec *repository.TaskRecord) {
+	if a.ctx == nil || rec == nil {
+		return
 	}
-	tx, err := a.db.Begin()
+	runtime.EventsEmit(a.ctx, eventTaskProgress, TaskProgressEvent{
+		TaskID:       rec.ID,
+		Status:       rec.Status,
+		Stage:        rec.Stage,
+		Progress:     rec.Progress,
+		CurrentStage: rec.CurrentStage,
+		Message:      rec.Message,
+		Error:        rec.Error,
+	})
+}
+
+// emitModel 推送模型下载进度。
+func (a *App) emitModel(event ModelProgressEventPayload) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, eventModelProgress, event)
+}
+
+// storeHandle 返回数据库句柄，未初始化时返回错误。
+func (a *App) storeHandle() (*repository.Store, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.store == nil {
+		return nil, errors.New("数据库未就绪")
+	}
+	return a.store, nil
+}
+
+// queueHandle 返回任务队列，未初始化时返回错误。
+func (a *App) queueHandle() (*service.Queue, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.queue == nil {
+		return nil, errors.New("任务调度器未就绪")
+	}
+	return a.queue, nil
+}
+
+// contextOrBackground 返回可用的上下文。
+func (a *App) contextOrBackground() context.Context {
+	if a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
+}
+
+// translationFactory 依据设置构造翻译流水线。
+type translationFactory struct {
+	settings func() repository.SettingsRecord
+}
+
+// New 实现 service.TranslatorFactory。
+func (f translationFactory) New(ctx context.Context, job service.TranslationJob) (service.Pipeline, error) {
+	cfg := translation.Config{
+		Kind:    job.Provider,
+		BaseURL: job.Endpoint,
+		APIKey:  job.APIKey,
+		Model:   job.Model,
+	}
+	provider, err := translation.New(cfg)
 	if err != nil {
-		return fmt.Errorf("start subtitle update: %w", err)
+		return nil, err
 	}
-	if _, err := tx.Exec(`DELETE FROM subtitle_segments WHERE task_id = ?`, taskID); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("clear subtitles: %w", err)
+	settings := repository.SettingsRecord{}
+	if f.settings != nil {
+		settings = f.settings()
 	}
-	for _, segment := range segments {
-		if strings.TrimSpace(segment.ID) == "" || segment.Sequence < 1 || segment.End < segment.Start || segment.Start < 0 {
-			_ = tx.Rollback()
-			return errors.New("subtitle segment is invalid")
-		}
-		if _, err := tx.Exec(`INSERT INTO subtitle_segments (id, task_id, sequence, start_time, end_time, source_text, translated_text, translation_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			segment.ID, taskID, segment.Sequence, segment.Start, segment.End, segment.SourceText, segment.Translated, segment.Status); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("save subtitle segment: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit subtitles: %w", err)
-	}
-	task := a.tasks[taskID]
-	task.SubtitleCount = len(segments)
-	if _, err := a.db.Exec(`UPDATE tasks SET subtitle_count = ? WHERE id = ?`, task.SubtitleCount, taskID); err != nil {
-		return fmt.Errorf("save subtitle count: %w", err)
-	}
-	return nil
+	return translation.NewTranslator(provider, translation.Options{
+		BatchSize:      20,
+		MaxRetries:     3,
+		Concurrency:    1,
+		Cache:          translation.NewMemoryCache(),
+		Glossary:       settings.Glossary,
+		SourceLanguage: job.SourceLanguage,
+		TargetLanguage: job.TargetLanguage,
+		Style:          defaultStyle(settings.TranslationStyle),
+		ContentMode:    "subtitle",
+	}), nil
 }
 
-func (a *App) ExportSubtitles(taskID string, format string) (string, error) {
-	segments, err := a.ListSubtitles(taskID)
-	if err != nil {
-		return "", err
+// ensureExecutable 检查可执行文件是否存在于 PATH 或给定路径。
+func ensureExecutable(path string) (string, bool) {
+	if strings.TrimSpace(path) == "" {
+		return "", false
 	}
-	if strings.ToLower(strings.TrimSpace(format)) != "srt" {
-		return "", errors.New("only srt export is supported")
+	if resolved, err := exec.LookPath(path); err == nil {
+		return resolved, true
 	}
-
-	var builder strings.Builder
-	for _, segment := range segments {
-		builder.WriteString(fmt.Sprintf("%d\n%s --> %s\n%s\n\n",
-			segment.Sequence,
-			formatSRTTime(segment.Start),
-			formatSRTTime(segment.End),
-			segment.Translated,
-		))
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return path, true
 	}
-	return builder.String(), nil
-}
-
-func demoSubtitles() []SubtitleSegment {
-	return []SubtitleSegment{
-		{ID: "segment-001", Sequence: 1, Start: 12.35, End: 17.82, SourceText: "Welcome to this tutorial.", Translated: "欢迎来到本教程。", Status: "translated"},
-		{ID: "segment-002", Sequence: 2, Start: 18.04, End: 23.60, SourceText: "Today we are going to talk about running large language models on your own machine.", Translated: "今天我们来聊聊，如何在自己的电脑上运行大型语言模型。", Status: "translated"},
-		{ID: "segment-003", Sequence: 3, Start: 23.88, End: 29.15, SourceText: "No cloud, no API keys, and nothing ever leaves your computer.", Translated: "不需要云端，也不需要 API Key，任何数据都不会离开你的电脑。", Status: "translated"},
-	}
-}
-
-func formatSRTTime(seconds float64) string {
-	if seconds < 0 {
-		seconds = 0
-	}
-	hours := int(seconds) / 3600
-	minutes := (int(seconds) % 3600) / 60
-	wholeSeconds := int(seconds) % 60
-	milliseconds := int(math.Round((seconds - float64(int(seconds))) * 1000))
-	if milliseconds == 1000 {
-		wholeSeconds++
-		milliseconds = 0
-	}
-	return fmt.Sprintf("%02d:%02d:%02d,%03d", hours, minutes, wholeSeconds, milliseconds)
+	return "", false
 }

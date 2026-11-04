@@ -5,6 +5,10 @@ export namespace main {
 	    sourceLanguage: string;
 	    targetLanguage: string;
 	    outputFormat: string;
+	    engine: string;
+	    model: string;
+	    translate: boolean;
+	    provider: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CreateTaskInput(source);
@@ -16,6 +20,10 @@ export namespace main {
 	        this.sourceLanguage = source["sourceLanguage"];
 	        this.targetLanguage = source["targetLanguage"];
 	        this.outputFormat = source["outputFormat"];
+	        this.engine = source["engine"];
+	        this.model = source["model"];
+	        this.translate = source["translate"];
+	        this.provider = source["provider"];
 	    }
 	}
 	export class Task {
@@ -25,10 +33,20 @@ export namespace main {
 	    sourceLanguage: string;
 	    targetLanguage: string;
 	    status: string;
+	    stage: string;
 	    progress: number;
 	    currentStage: string;
 	    subtitleCount: number;
+	    translatedCount: number;
+	    message: string;
+	    error: string;
+	    engine: string;
+	    model: string;
+	    provider: string;
+	    outputFormat: string;
+	    duration: number;
 	    createdAt: string;
+	    updatedAt: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Task(source);
@@ -42,10 +60,20 @@ export namespace main {
 	        this.sourceLanguage = source["sourceLanguage"];
 	        this.targetLanguage = source["targetLanguage"];
 	        this.status = source["status"];
+	        this.stage = source["stage"];
 	        this.progress = source["progress"];
 	        this.currentStage = source["currentStage"];
 	        this.subtitleCount = source["subtitleCount"];
+	        this.translatedCount = source["translatedCount"];
+	        this.message = source["message"];
+	        this.error = source["error"];
+	        this.engine = source["engine"];
+	        this.model = source["model"];
+	        this.provider = source["provider"];
+	        this.outputFormat = source["outputFormat"];
+	        this.duration = source["duration"];
 	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
 	    }
 	}
 	export class Dashboard {
@@ -79,6 +107,152 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class EnvironmentStatus {
+	    ffmpegPath: string;
+	    ffmpegOk: boolean;
+	    ffmpegDetail: string;
+	    ffmpegSubtitle: boolean;
+	    pythonPath: string;
+	    pythonOk: boolean;
+	    pythonDetail: string;
+	    fasterWhisper: boolean;
+	    gpu: string;
+	    modelDir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EnvironmentStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ffmpegPath = source["ffmpegPath"];
+	        this.ffmpegOk = source["ffmpegOk"];
+	        this.ffmpegDetail = source["ffmpegDetail"];
+	        this.ffmpegSubtitle = source["ffmpegSubtitle"];
+	        this.pythonPath = source["pythonPath"];
+	        this.pythonOk = source["pythonOk"];
+	        this.pythonDetail = source["pythonDetail"];
+	        this.fasterWhisper = source["fasterWhisper"];
+	        this.gpu = source["gpu"];
+	        this.modelDir = source["modelDir"];
+	    }
+	}
+	export class ModelInfo {
+	    id: string;
+	    name: string;
+	    repo: string;
+	    sizeBytes: number;
+	    installed: boolean;
+	    installing: boolean;
+	    progress: number;
+	    localPath: string;
+	    mirror: string;
+	    description: string;
+	    files: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.repo = source["repo"];
+	        this.sizeBytes = source["sizeBytes"];
+	        this.installed = source["installed"];
+	        this.installing = source["installing"];
+	        this.progress = source["progress"];
+	        this.localPath = source["localPath"];
+	        this.mirror = source["mirror"];
+	        this.description = source["description"];
+	        this.files = source["files"];
+	    }
+	}
+	export class SettingsPatch {
+	    ffmpegPath?: string;
+	    pythonPath?: string;
+	    modelDir?: string;
+	    mirror?: string;
+	    huggingFaceEndpoint?: string;
+	    asrEngine?: string;
+	    asrDevice?: string;
+	    computeType?: string;
+	    defaultModel?: string;
+	    translationProvider?: string;
+	    translationEndpoint?: string;
+	    translationModel?: string;
+	    translationApiKey?: string;
+	    cloudPrivacyConfirm?: boolean;
+	    translationStyle?: string;
+	    glossaryText?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SettingsPatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ffmpegPath = source["ffmpegPath"];
+	        this.pythonPath = source["pythonPath"];
+	        this.modelDir = source["modelDir"];
+	        this.mirror = source["mirror"];
+	        this.huggingFaceEndpoint = source["huggingFaceEndpoint"];
+	        this.asrEngine = source["asrEngine"];
+	        this.asrDevice = source["asrDevice"];
+	        this.computeType = source["computeType"];
+	        this.defaultModel = source["defaultModel"];
+	        this.translationProvider = source["translationProvider"];
+	        this.translationEndpoint = source["translationEndpoint"];
+	        this.translationModel = source["translationModel"];
+	        this.translationApiKey = source["translationApiKey"];
+	        this.cloudPrivacyConfirm = source["cloudPrivacyConfirm"];
+	        this.translationStyle = source["translationStyle"];
+	        this.glossaryText = source["glossaryText"];
+	    }
+	}
+	export class SettingsSnapshot {
+	    ffmpegPath: string;
+	    pythonPath: string;
+	    modelDir: string;
+	    mirror: string;
+	    huggingFaceEndpoint: string;
+	    asrEngine: string;
+	    asrDevice: string;
+	    computeType: string;
+	    defaultModel: string;
+	    translationProvider: string;
+	    translationEndpoint: string;
+	    translationModel: string;
+	    translationApiKeySet: boolean;
+	    cloudPrivacyConfirm: boolean;
+	    translationStyle: string;
+	    glossaryText: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SettingsSnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ffmpegPath = source["ffmpegPath"];
+	        this.pythonPath = source["pythonPath"];
+	        this.modelDir = source["modelDir"];
+	        this.mirror = source["mirror"];
+	        this.huggingFaceEndpoint = source["huggingFaceEndpoint"];
+	        this.asrEngine = source["asrEngine"];
+	        this.asrDevice = source["asrDevice"];
+	        this.computeType = source["computeType"];
+	        this.defaultModel = source["defaultModel"];
+	        this.translationProvider = source["translationProvider"];
+	        this.translationEndpoint = source["translationEndpoint"];
+	        this.translationModel = source["translationModel"];
+	        this.translationApiKeySet = source["translationApiKeySet"];
+	        this.cloudPrivacyConfirm = source["cloudPrivacyConfirm"];
+	        this.translationStyle = source["translationStyle"];
+	        this.glossaryText = source["glossaryText"];
+	    }
 	}
 	export class SubtitleSegment {
 	    id: string;

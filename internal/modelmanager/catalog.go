@@ -1,0 +1,215 @@
+package modelmanager
+
+import (
+	"sort"
+	"strings"
+)
+
+// fasterWhisperRepoPrefix 是官方 CTranslate2 转换仓库的固定前缀。
+//
+// 这些仓库由 Hugging Face 上的 Systran 组织维护，是 faster-whisper
+// （CTranslate2 推理后端）官方推荐使用的权重格式，不含 PyTorch 权重。
+const fasterWhisperRepoPrefix = "Systran/faster-whisper-"
+
+// 文件体积常量（单位：字节），来自 2026 年 11 月对 hf-mirror.com 的实测响应。
+//
+// 说明：小文件（config.json / tokenizer.json / vocabulary.*）在镜像上会走
+// 分块传输，不一定带 Content-Length；这里的数字是完整下载后的实际字节数。
+// tokenizer.json 与 vocabulary.txt 在 tiny/base/small/medium 四个仓库中完全
+// 相同（2,203,239 与 459,861 字节），large-v3 的 tokenizer.json 为 2,480,617
+// 字节，并且该仓库没有 vocabulary.txt，改用 vocabulary.json（1,068,114 字节）。
+const (
+	sizeTokenizerSmall = int64(2203239)  // tokenizer.json（tiny/base/small/medium）
+	sizeVocabularyTxt  = int64(459861)   // vocabulary.txt（tiny/base/small/medium）
+	sizeTokenizerV3    = int64(2480617)  // tokenizer.json（large-v3）
+	sizeVocabularyV3   = int64(1068114)  // vocabulary.json（large-v3）
+	sizeModelTiny      = int64(75538270) // model.bin（tiny）
+	sizeModelBase      = int64(145217532)
+	sizeModelSmall     = int64(483546902)
+	sizeModelMedium    = int64(1527906378)
+	sizeModelLargeV3   = int64(3087284237)
+)
+
+// DefaultCatalog 返回内置模型清单。
+//
+// 来源均为 Hugging Face 上的官方 CTranslate2 转换仓库
+// `Systran/faster-whisper-<size>`；仓库内实际存在的文件为：
+//
+//   - config.json          （全部型号）
+//   - model.bin            （全部型号，CTranslate2 int8 量化权重，主要体积来源）
+//   - tokenizer.json       （全部型号，HF fast tokenizer）
+//   - vocabulary.txt       （tiny/base/small/medium；large-v3 仓库没有该文件）
+//   - vocabulary.json      （仅 large-v3）
+//
+// Required 包含 config.json、model.bin、tokenizer.json 与词表文件：faster-whisper
+// 加载本地目录时缺少 tokenizer 或词表会直接报 “Cannot load the vocabulary”，
+// 因此它们都是运行必需文件；下载中断留下的半成品目录也不会被当成「已安装」。
+func DefaultCatalog() []CatalogEntry {
+	return []CatalogEntry{
+		newEntry(
+			"tiny",
+			"Whisper Tiny",
+			"约 39M 参数，速度最快、精度最低，适合快速草稿与低配机器。",
+			sizeModelTiny,
+			[]ManifestFile{
+				{Path: "config.json", Size: 2249},
+				{Path: "model.bin", Size: sizeModelTiny},
+				{Path: "tokenizer.json", Size: sizeTokenizerSmall},
+				{Path: "vocabulary.txt", Size: sizeVocabularyTxt},
+			},
+		),
+		newEntry(
+			"base",
+			"Whisper Base",
+			"约 74M 参数，速度与中文识别质量的平衡点，适合日常短视频。",
+			sizeModelBase,
+			[]ManifestFile{
+				{Path: "config.json", Size: 2309},
+				{Path: "model.bin", Size: sizeModelBase},
+				{Path: "tokenizer.json", Size: sizeTokenizerSmall},
+				{Path: "vocabulary.txt", Size: sizeVocabularyTxt},
+			},
+		),
+		newEntry(
+			"small",
+			"Whisper Small",
+			"约 244M 参数，中文准确率明显提升，推荐的通用默认模型。",
+			sizeModelSmall,
+			[]ManifestFile{
+				{Path: "config.json", Size: 2370},
+				{Path: "model.bin", Size: sizeModelSmall},
+				{Path: "tokenizer.json", Size: sizeTokenizerSmall},
+				{Path: "vocabulary.txt", Size: sizeVocabularyTxt},
+			},
+		),
+		newEntry(
+			"medium",
+			"Whisper Medium",
+			"约 769M 参数，准确率更高，需要更多内存与更长的识别时间。",
+			sizeModelMedium,
+			[]ManifestFile{
+				{Path: "config.json", Size: 2257},
+				{Path: "model.bin", Size: sizeModelMedium},
+				{Path: "tokenizer.json", Size: sizeTokenizerSmall},
+				{Path: "vocabulary.txt", Size: sizeVocabularyTxt},
+			},
+		),
+		newEntry(
+			"large-v3",
+			"Whisper Large v3",
+			"约 1.55B 参数，多语言与中文准确率最好，体积和显存占用也最大。",
+			sizeModelLargeV3,
+			[]ManifestFile{
+				{Path: "config.json", Size: 2394},
+				{Path: "model.bin", Size: sizeModelLargeV3},
+				{Path: "tokenizer.json", Size: sizeTokenizerV3},
+				{Path: "vocabulary.json", Size: sizeVocabularyV3},
+			},
+		),
+	}
+}
+
+// newEntry 组装一条清单项，自动填充 Repo 与 Required。
+func newEntry(id, name, description string, modelBinSize int64, files []ManifestFile) CatalogEntry {
+	total := int64(0)
+	for _, f := range files {
+		total += f.Size
+	}
+	// 以文件体积之和为准；若外部传入的粗略值更大则保留（便于人工估算富余）。
+	size := total
+	if modelBinSize > 0 && modelBinSize > size {
+		size = modelBinSize
+	}
+	return CatalogEntry{
+		ID:          id,
+		Name:        name,
+		Repo:        fasterWhisperRepoPrefix + id,
+		Description: description,
+		SizeBytes:   size,
+		Files:       files,
+		Required:    requiredFiles(files),
+	}
+}
+
+// requiredFiles 返回清单中全部文件路径：模型目录缺少任何一个都无法被
+// faster-whisper 正常加载，因此全部视为必需文件。
+func requiredFiles(files []ManifestFile) []string {
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		out = append(out, f.Path)
+	}
+	return out
+}
+
+// NormalizeModelID 把各种写法归一化为清单 ID。
+//
+// 支持的输入形式（大小写、下划线/空格、首尾空白都会忽略）：
+//
+//	small
+//	Systran/faster-whisper-small
+//	faster-whisper-small
+//	systran__faster-whisper-small     （本地缓存目录名会把 / 换成 __）
+//	Systran--faster-whisper-small     （Hugging Face 的旧式缓存目录名）
+func NormalizeModelID(id string) string {
+	s := strings.ToLower(strings.TrimSpace(id))
+	if s == "" {
+		return ""
+	}
+	// 统一分隔符：本地缓存目录中可能把 / 编码成 __ 或 --。
+	s = strings.ReplaceAll(s, "__", "/")
+	s = strings.ReplaceAll(s, "--", "/")
+	s = strings.ReplaceAll(s, "_", "-")
+	s = strings.ReplaceAll(s, " ", "")
+
+	// 只保留最后一段，用于匹配 tiny/base/small/medium/large-v3 等型号。
+	if idx := strings.LastIndex(s, "/"); idx >= 0 {
+		s = s[idx+1:]
+	}
+	s = strings.TrimPrefix(s, "faster-whisper-")
+	s = strings.TrimPrefix(s, "faster-whisper")
+	s = strings.TrimPrefix(s, "whisper-")
+	s = strings.TrimPrefix(s, "whisper")
+	s = strings.Trim(s, "-")
+	return s
+}
+
+// FindCatalogEntry 在给定清单中按 ID 查找模型，支持别名归一化。
+func FindCatalogEntry(id string) (CatalogEntry, bool) {
+	return findInCatalog(DefaultCatalog(), id)
+}
+
+// findInCatalog 与 FindCatalogEntry 逻辑相同，但允许传入自定义清单（测试与注入用）。
+func findInCatalog(catalog []CatalogEntry, id string) (CatalogEntry, bool) {
+	want := NormalizeModelID(id)
+	raw := strings.ToLower(strings.TrimSpace(id))
+	for _, e := range catalog {
+		if raw != "" && strings.ToLower(e.ID) == raw {
+			return e, true
+		}
+		if strings.EqualFold(e.Repo, strings.TrimSpace(id)) {
+			return e, true
+		}
+	}
+	if want == "" {
+		return CatalogEntry{}, false
+	}
+	for _, e := range catalog {
+		if NormalizeModelID(e.ID) == want {
+			return e, true
+		}
+		if NormalizeModelID(e.Repo) == want {
+			return e, true
+		}
+	}
+	return CatalogEntry{}, false
+}
+
+// modelIDs 返回清单中所有模型 ID（已排序，便于稳定输出）。
+func modelIDs(catalog []CatalogEntry) []string {
+	ids := make([]string, 0, len(catalog))
+	for _, e := range catalog {
+		ids = append(ids, e.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
