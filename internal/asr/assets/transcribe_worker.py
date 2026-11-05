@@ -175,10 +175,78 @@ def build_model(request):
 
     emit({"type": "progress", "ratio": -1, "message": "正在加载模型 %s ..." % model_ref})
     try:
-        return WhisperModel(model_ref, **kwargs)
+        model = WhisperModel(model_ref, **kwargs)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc(file=sys.stderr)
         fail("加载模型失败（%s）：%s" % (model_ref, exc))
+
+    align_mel_channels(model, model_ref)
+    return model
+
+
+def align_mel_channels(model, model_ref):
+    """让特征提取器的 mel 通道数对齐模型权重要求的通道数。
+
+    背景：faster-whisper 用 FeatureExtractor 算 log-Mel 特征，mel 滤波器组
+    数量取自模型目录里 preprocessor_config.json 的 feature_size；该文件缺失时
+    FeatureExtractor 静默回落到硬编码默认值 80。而 large-v3 的权重是按 128 个
+    mel 通道训练的，于是推理时报：
+
+        Invalid input features shape: expected an input with shape
+        (1, 128, 3000), but got an input with shape (1, 80, 3000) instead
+
+    这个错误只在第一次推理时抛，而且信息完全不指向根因，用户很难自查。
+    更麻烦的是，老版本应用下载的 large-v3 目录里根本没有这个配置文件，
+    即使升级程序也不会自动补上。
+
+    这里在加载模型后做一次自检：发现两边通道数不一致时，按模型要求的
+    n_mels 重建 FeatureExtractor，并同步重算依赖它的三个派生量。这样
+    无论目录里有没有 preprocessor_config.json，都能正常识别。
+    """
+    try:
+        from faster_whisper.feature_extractor import FeatureExtractor
+    except Exception:  # noqa: BLE001
+        return
+
+    extractor = getattr(model, "feature_extractor", None)
+    inner = getattr(model, "model", None)
+    if extractor is None or inner is None:
+        return
+
+    try:
+        want = int(getattr(inner, "n_mels", 0) or 0)
+        mel_filters = getattr(extractor, "mel_filters", None)
+        have = int(mel_filters.shape[0]) if mel_filters is not None else 0
+    except Exception:  # noqa: BLE001
+        return
+
+    if want <= 0 or have <= 0 or want == have:
+        return
+
+    log("特征维度与模型不一致（提取器 %d / 模型 %d），按模型要求重建特征提取器" % (have, want))
+    try:
+        feat_kwargs = dict(getattr(model, "feat_kwargs", {}) or {})
+        feat_kwargs["feature_size"] = want
+        model.feature_extractor = FeatureExtractor(**feat_kwargs)
+        # 这三个量都是从 feature_extractor 派生的，必须一起重算，
+        # 否则时间轴会按错误的 hop 换算，字幕整体错位。
+        model.num_samples_per_token = model.feature_extractor.hop_length * model.input_stride
+        model.frames_per_second = (
+            model.feature_extractor.sampling_rate // model.feature_extractor.hop_length
+        )
+        model.tokens_per_second = (
+            model.feature_extractor.sampling_rate // model.num_samples_per_token
+        )
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc(file=sys.stderr)
+        fail(
+            "模型 %s 需要 %d 个 mel 通道，但特征提取器只有 %d 个，且自动修复失败：%s。"
+            "请删除模型目录后重新下载（模型目录需要包含 preprocessor_config.json）"
+            % (model_ref, want, have, exc)
+        )
+    else:
+        log("已按模型要求重建特征提取器（%d 个 mel 通道）" % want)
+
 
 
 def make_progress_callback(total_duration):

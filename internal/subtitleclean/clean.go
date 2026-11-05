@@ -6,6 +6,10 @@
 //
 // 参考实现：WhisperJAV 的 whisperjav/data/hallucination_filters/regexp_v09.json。
 // 本包只做与语言无关的通用规则，不引入特定语种的脏词库，避免误伤正常内容。
+//
+// 除套话之外，还处理两类解码退化：
+//   - 跨语种幻觉：日语/中文/韩语视频里整条变成纯英文等外语（需要 Options.ExpectedLanguage）；
+//   - 长循环：同一单元连续重复几十上百次（见 CollapseLongLoops）。
 package subtitleclean
 
 import (
@@ -33,6 +37,15 @@ const (
 // Options 是清洗参数。
 type Options struct {
 	Level Level
+
+	// ExpectedLanguage 是视频的预期语言（BCP 47 主标签，例如 "ja"、"zh"、"ko"）。
+	//
+	// 非空且为非拉丁文字语言时，medium 及以上等级会丢弃「完全没有该语言字符、
+	// 但含 8 个以上拉丁字母」的条目：日语视频里整条变成 "I don't give much."
+	// 这类纯外语条目几乎都是识别幻觉。
+	// 留空表示不启用该规则；传拉丁语系语言（en/fr/pt…）同样不启用，
+	// 因为拉丁字母对这些语言没有判别力。
+	ExpectedLanguage string
 }
 
 // Result 是清洗结果。
@@ -53,6 +66,12 @@ func Clean(segments []asr.Segment, opts Options) Result {
 		return Result{Segments: append([]asr.Segment(nil), segments...)}
 	}
 
+	// expectRunes 非空表示启用跨语种幻觉过滤（medium 及以上生效）。
+	expectRunes := languageRuneRanges(opts.ExpectedLanguage)
+	if level == LevelLow {
+		expectRunes = nil
+	}
+
 	out := make([]asr.Segment, 0, len(segments))
 	dropped := 0
 	// prevKey 用于识别「连续重复」：只有紧邻的重复才算幻觉。
@@ -70,6 +89,17 @@ func Clean(segments []asr.Segment, opts Options) Result {
 			prevKey = ""
 			continue
 		}
+
+		// 跨语种幻觉：整条没有预期语言的字符，却有较多拉丁字母。
+		// 必须在长循环折叠之前判断，否则折叠后的残留会更难判别。
+		if len(expectRunes) > 0 && isCrossLanguageHallucination(text, expectRunes) {
+			dropped++
+			prevKey = ""
+			continue
+		}
+
+		// 长循环折叠：low 及以上都生效，只裁剪文本不丢弃条目。
+		text = CollapseLongLoops(text)
 
 		key := repeatKey(text)
 		if level == LevelMedium || level == LevelHigh {

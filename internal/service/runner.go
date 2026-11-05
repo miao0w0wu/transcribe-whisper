@@ -365,6 +365,10 @@ func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, set
 	if result != nil && len(result.Segments) > 0 {
 		cleaned := subtitleclean.Clean(result.Segments, subtitleclean.Options{
 			Level: subtitleclean.Level(settings.HallucinationFilter),
+			// 传入源语言用于「跨语种幻觉」判定：日语视频里整条变成纯英文
+			// 基本可断定是识别幻觉。优先用任务上指定的语言，其次是引擎
+			// 自动检测出来的语言（result.Language）。
+			ExpectedLanguage: cleanLanguage(language, result.Language),
 		})
 		if cleaned.Dropped > 0 {
 			log.Printf("任务 %s：过滤掉 %d 条疑似幻觉字幕（等级：%s）",
@@ -381,6 +385,22 @@ func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, set
 		return nil, "", fmt.Errorf("更新任务统计失败: %w", err)
 	}
 	return segments, result.Language, nil
+}
+
+// cleanLanguage 决定清洗器该按哪种语言判断「跨语种幻觉」。
+//
+// 优先用用户在任务上显式指定的语言（requested）；为空或是 auto 时退回
+// 引擎自动检测的结果（detected）。两者都不可用时返回空串，此时清洗器
+// 不会启用跨语种规则，行为与改动前一致。
+func cleanLanguage(requested, detected string) string {
+	for _, candidate := range []string{requested, detected} {
+		value := strings.TrimSpace(candidate)
+		if value == "" || strings.EqualFold(value, "auto") {
+			continue
+		}
+		return value
+	}
+	return ""
 }
 
 // resolveBeamSize 返回可用的 beam_size。

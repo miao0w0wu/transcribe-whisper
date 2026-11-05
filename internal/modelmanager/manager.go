@@ -456,6 +456,23 @@ func (m *ManagerImpl) Ensure(ctx context.Context, modelID string, progress Progr
 // 采用「先按镜像优先级遍历文件，再在文件内切换镜像」的策略：
 // 单个镜像失败只影响当前文件，不会重复下载已经成功的同镜像文件。
 // 返回值 fatal 非 nil 表示流程被取消或出现不可继续的错误，调用方应立即返回。
+// builtinFileContents 返回不需要联网下载的内置文件内容。
+//
+// 有些小配置文件的内容是完全确定的（不随模型版本变化），直接内嵌到二进制里
+// 写盘比走网络更可靠：
+//   - 不依赖镜像可用性，离线也能装好；
+//   - 不会被代理/镜像返回的错误页污染（这类文件只有几百字节，
+//     体积校验的 ±1% 容差几乎拦不住错误内容）；
+//   - 少一次网络往返。
+//
+// 返回 nil 表示该文件没有内置内容，按常规流程下载。
+func builtinFileContents(entry CatalogEntry, relPath string) []byte {
+	if entry.ID == "large-v3" && relPath == "preprocessor_config.json" {
+		return []byte(preprocessorLargeV3)
+	}
+	return nil
+}
+
 func (m *ManagerImpl) downloadFiles(ctx context.Context, entry CatalogEntry, dir string, emit func(done int64, msg string)) (errs []string, fatal error) {
 	mirrors := m.usableMirrors()
 	if len(mirrors) == 0 {
@@ -467,6 +484,31 @@ func (m *ManagerImpl) downloadFiles(ctx context.Context, entry CatalogEntry, dir
 			return errs, err
 		}
 		dst := filepath.Join(dir, filepath.FromSlash(f.Path))
+
+		// 内置文件直接写盘，不走网络。
+		if content := builtinFileContents(entry, f.Path); content != nil {
+			if info, err := os.Stat(dst); err == nil && !info.IsDir() &&
+				info.Size() == int64(len(content)) {
+				// 已经是正确内容，跳过。
+				emit(int64(len(content)), "已就绪 "+f.Path)
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return errs, fmt.Errorf("创建目录失败：%w", err)
+			}
+			// 先写临时文件再改名，避免并发读到半截文件。
+			tmp := dst + ".tmp"
+			if err := os.WriteFile(tmp, content, 0o644); err != nil {
+				return errs, fmt.Errorf("写入内置文件 %s 失败：%w", f.Path, err)
+			}
+			if err := os.Rename(tmp, dst); err != nil {
+				_ = os.Remove(tmp)
+				return errs, fmt.Errorf("安装内置文件 %s 失败：%w", f.Path, err)
+			}
+			emit(int64(len(content)), "已写入 "+f.Path)
+			continue
+		}
+
 		if info, err := os.Stat(dst); err == nil && !info.IsDir() {
 			if f.Size <= 0 || info.Size() == f.Size {
 				continue

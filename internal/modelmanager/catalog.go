@@ -28,7 +28,38 @@ const (
 	sizeModelSmall     = int64(483546902)
 	sizeModelMedium    = int64(1527906378)
 	sizeModelLargeV3   = int64(3087284237)
+	// sizePreprocessorV3 是 large-v3 的 preprocessor_config.json（340 字节）。
+	//
+	// 只有 large-v3 仓库带这个文件，tiny/base/small/medium 均返回 404。
+	sizePreprocessorV3 = int64(340)
 )
+
+// preprocessorLargeV3 是 large-v3 的 preprocessor_config.json 内容。
+//
+// 为什么必须下载这个文件：faster-whisper 用 FeatureExtractor 算 log-Mel
+// 特征，mel 滤波器组数量取自 preprocessor_config.json 的 feature_size，
+// 缺失时 FeatureExtractor 回落到硬编码默认值 80。而 large-v3 的模型权重
+// 是按 128 个 mel 通道训练的（CTranslate2 的 Whisper.n_mels == 128），于是
+// 推理时抛「Invalid input features shape: expected an input with shape
+// (1, 128, 3000), but got an input with shape (1, 80, 3000) instead」。
+//
+// 该文件缺失时 faster-whisper 不会报错也不会警告，只是静默用错维度，
+// 所以必须作为必需文件下发，而不是等运行期才暴露。
+const preprocessorLargeV3 = `{
+  "chunk_length": 30,
+  "feature_extractor_type": "WhisperFeatureExtractor",
+  "feature_size": 128,
+  "hop_length": 160,
+  "n_fft": 400,
+  "n_samples": 480000,
+  "nb_max_frames": 3000,
+  "padding_side": "right",
+  "padding_value": 0.0,
+  "processor_class": "WhisperProcessor",
+  "return_attention_mask": false,
+  "sampling_rate": 16000
+}
+`
 
 // cohereTranscribeRepo 是 cohere-transcribe-03-2026 的下载来源。
 //
@@ -133,6 +164,10 @@ func DefaultCatalog() []CatalogEntry {
 				{Path: "model.bin", Size: sizeModelLargeV3},
 				{Path: "tokenizer.json", Size: sizeTokenizerV3},
 				{Path: "vocabulary.json", Size: sizeVocabularyV3},
+				// large-v3 必须带 preprocessor_config.json（feature_size=128），
+				// 否则 faster-whisper 会按 80 个 mel 通道提特征，与权重的 128
+				// 通道不匹配，识别直接报 Invalid input features shape。
+				{Path: "preprocessor_config.json", Size: sizePreprocessorV3},
 			},
 		),
 		newCohereEntry(),

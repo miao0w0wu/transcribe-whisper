@@ -24,6 +24,7 @@ safetensors + 自定义建模代码的格式，faster-whisper（CTranslate2）�
 import json
 import math
 import os
+import re
 import sys
 import traceback
 
@@ -37,6 +38,38 @@ CHUNK_SECONDS = 30.0
 CHUNK_OVERLAP_SECONDS = 0.5
 # 单次生成的最大 token 数。30 秒语音正常在 200 token 以内。
 MAX_NEW_TOKENS = 448
+# 解码时禁止重复的 n-gram 长度。
+#
+# 模型陷入解码循环时会把同一短语吐几十上百次（本机实测：日语视频里出现
+# "I don't give much." 连写 60 遍、葡萄牙语整句循环）。贪心解码没有采样
+# 随机性，一旦进了循环就无法自行跳出，需要在解码层加一道硬约束。
+#
+# 取值 10 而不是 5：日语一个假名往往就是一个 token（实测 token/字符比
+# 只有 0.4~0.9），5-gram 仅覆盖约 6 个字符，会把「ちょっと待ってください。
+# ちょっと待ってください。」这类正常的重复呼唤硬改成别的说法。实测对比
+# 同一段日语音频：ngram=5 出现「ダメ?」「シール塔」这类明显错字，
+# ngram=10 与「无限制」的输出完全一致。取 10 既能覆盖整句循环，又不伤
+# 正常文本。
+NO_REPEAT_NGRAM_SIZE = 10
+# 判定「重复循环」时，重复单元覆盖全文的比例阈值。
+LOOP_COVERAGE_THRESHOLD = 0.5
+# 重复单元覆盖率达到阈值且单元长度不超过该值时，判为解码循环。
+LOOP_MAX_UNIT_CHARS = 200
+# 判定为解码循环所需的重复段最短总长度（字符数）。
+#
+# 这是把「真幻觉」和「正常语气重复」区分开的关键闸门：真实的语气重复
+# （"はい。はい。はい。"、"あ。あ。あ。"、"ねえねえねえ"）总长都很短，
+# 而解码退化会连吐几十上百次。阈值取 20 与 Go 侧 subtitleclean 一致。
+LOOP_MIN_SPAN_CHARS = 20
+# 字符级循环：重复单元最大字符数与最少重复次数。
+LOOP_CHAR_UNIT_MAX = 4
+LOOP_MIN_REPEAT = 3
+# 词/句级循环所需的**最少重复次数**（比字符级更严）。
+#
+# 真实说话会把同一句强调 2~3 次（"ちょっと待って。ちょっと待って。ちょっと待って。"），
+# 但极少连说 5 次以上；解码退化则会连吐几十上百次。用次数把两者分开，
+# 比单纯看长度更稳：短句连说 3 次是正常语气，长句连说 5 次才是幻觉。
+LOOP_MIN_LOOP_REPEAT = 5
 
 # 静音判定阈值（RMS，float32 归一化到 [-1,1]）。
 #
@@ -289,6 +322,11 @@ def build_model_and_processor(request):
         traceback.print_exc(file=sys.stderr)
         fail("加载处理器失败（%s）：%s" % (model_ref, exc))
 
+    # 语言校验尽量提前：加载 2GB 权重要好几十秒，不该等加载完才告诉用户
+    # 「语言选错了」。这里用 processor 里已经拿到的 tokenizer 配置做初步
+    # 判断，真正的权威校验在 build_decoder_prompt（拿到 model.config 之后）。
+    validate_language_early(processor, request.get("language"))
+
     # dtype：优先 bfloat16（cohere 权重是 BF16），CPU 上退到 float32。
     if device == "cuda" and torch.cuda.is_available():
         torch_dtype = torch.bfloat16
@@ -327,34 +365,138 @@ def detect_device_dtype(model):
         return torch.device("cpu"), torch.float32
 
 
-def transcribe_chunk(model, processor, audio, language, device, dtype):
+def validate_language_early(processor, raw_language):
+    """在加载大权重的漫长等待之前，先把「语言选错」这类问题拦下来。
+
+    从 processor 的配置文件里读取模型声明的支持语言列表；读不到就静默跳过，
+    交给之后的权威校验（build_decoder_prompt 用 model.config 判断）。
+    """
+    language = normalize_language(raw_language)
+    if language is None:
+        return
+    try:
+        cfg = getattr(processor, "feature_extractor", None)
+        supported = getattr(cfg, "supported_languages", None)
+        if supported is None:
+            tokenizer = getattr(processor, "tokenizer", None)
+            supported = getattr(tokenizer, "supported_languages", None)
+        if not supported:
+            return
+        allowed = set(supported)
+        if language not in allowed:
+            fail(
+                "该模型不支持语言 %r，支持：%s。请在任务里改选受支持的源语言"
+                % (language, "、".join(sorted(allowed)))
+            )
+    except SystemExit:
+        raise
+    except Exception:  # noqa: BLE001
+        # 配置里没有该字段是正常的，不要因为校验不了就中断。
+        return
+
+
+def build_decoder_prompt(model, language, punctuation=True):
+    """构造 cohere 系模型的解码器 prompt 文本。
+
+    为什么必须这么做：CohereAsrProcessor.__call__ 的签名是
+    `(audio, text, sampling_rate, return_tensors, **kwargs)`，多余的
+    `language=` 会被 **kwargs 静默吞掉——既不报错也不生效。而模型自己的
+    文档写得很清楚：
+
+        language: ISO 639-1 language code. The model does not perform
+        language detection, so this is required.
+
+    也就是说，不传语言时 decoder 拿不到任何语言约束，模型只能「猜」，
+    在噪声、喘息、音乐段上极易跑成英语/葡语/法语（本机实测：日语视频里
+    出现 "I don't give much." ×60、"O que é que você está fazendo?" 等）。
+    正确做法是把语言编码进 decoder 的起始 prompt。
+
+    返回 None 表示这个模型不需要/不支持 prompt（例如标准 Whisper），
+    调用方应回落到原来的纯音频调用方式。
+    """
+    build = getattr(model, "build_prompt", None)
+    if not callable(build):
+        return None
+    if not language:
+        return None
+
+    # 主动校验语言是否受支持。
+    #
+    # 不能依赖 build_prompt 自己报错：它只是纯字符串拼接
+    # （"<|ja|><|ja|>..."），任何标签都能拼出语法合法的 prompt。
+    # 而前端语言列表里有 ru 这类 cohere 并不支持的语言，拼出来的
+    # "<|ru|>" 甚至是个合法 token——模型会安静地按错误语言解码，
+    # 用户只会看到一堆看不懂的字幕，完全不知道该改语言设置。
+    supported = getattr(getattr(model, "config", None), "supported_languages", None)
+    if supported:
+        allowed = set(supported)
+        if language not in allowed:
+            fail(
+                "该模型不支持语言 %r，支持：%s。请在任务里改选受支持的源语言"
+                % (language, "、".join(sorted(allowed)))
+            )
+
+    try:
+        prompt = build(language=language, punctuation=punctuation)
+    except Exception as exc:  # noqa: BLE001
+        supported = getattr(getattr(model, "config", None), "supported_languages", None)
+        if supported:
+            fail("模型不支持语言 %r，支持：%s" % (language, "、".join(sorted(supported))))
+        log("构造语言 prompt 失败，将不带语言约束识别（%s）" % exc)
+        return None
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    return prompt
+
+
+def transcribe_chunk(model, processor, audio, language, device, dtype, prompt=None):
     """对一段音频做一次生成，返回文本。"""
     import torch
 
+    call_kwargs = dict(sampling_rate=16000, return_tensors="pt")
+    # 关键：语言必须通过 text= 传进 processor，才能变成 decoder_input_ids。
+    # 传 language= 会被 processor 的 **kwargs 吞掉，等于没传。
+    if prompt:
+        call_kwargs["text"] = prompt
+
     try:
-        inputs = processor(
-            audio,
-            sampling_rate=16000,
-            return_tensors="pt",
-            language=language,
-        )
+        inputs = processor(audio, **call_kwargs)
     except TypeError:
-        # 个别版本不接受 language 关键字，退回不指定语言。
+        # 个别版本不接受 text 关键字，退回不指定语言。
         inputs = processor(audio, sampling_rate=16000, return_tensors="pt")
 
     chunk_index = inputs.pop("audio_chunk_index", None) if hasattr(inputs, "pop") else None
+
+    # processor 把 prompt 放在 input_ids 里，generate 需要的是 decoder_input_ids。
+    if hasattr(inputs, "pop") and "input_ids" in inputs and "decoder_input_ids" not in inputs:
+        inputs["decoder_input_ids"] = inputs.pop("input_ids")
+
     inputs = inputs.to(device, dtype=dtype)
 
+    generate_kwargs = {"max_new_tokens": MAX_NEW_TOKENS}
+    # 抑制解码退化：模型陷入循环时会把同一 n-gram 反复吐几十上百次。
+    # 对贪心解码（num_beams=1）来说，禁用重复 n-gram 是最直接有效的兜底。
+    generate_kwargs["no_repeat_ngram_size"] = NO_REPEAT_NGRAM_SIZE
+    generate_kwargs["num_beams"] = 1
+    generate_kwargs["do_sample"] = False
+
     with torch.inference_mode():
-        outputs = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS)
+        outputs = model.generate(**inputs, **generate_kwargs)
+
+    # 裁掉 decoder 侧喂进去的 prompt，只留模型新生成的 token。
+    prompt_len = 0
+    if hasattr(inputs, "get"):
+        decoder_ids = inputs.get("decoder_input_ids")
+        if decoder_ids is not None:
+            prompt_len = int(decoder_ids.shape[1])
 
     decode_kwargs = {"skip_special_tokens": True}
     if chunk_index is not None:
         decode_kwargs["audio_chunk_index"] = chunk_index
-    if language:
-        decode_kwargs["language"] = language
 
     try:
+        if prompt_len and hasattr(outputs, "shape") and outputs.shape[1] > prompt_len:
+            outputs = outputs[:, prompt_len:]
         text = processor.decode(outputs, **decode_kwargs)
     except TypeError:
         text = processor.decode(outputs, skip_special_tokens=True)
@@ -363,6 +505,93 @@ def transcribe_chunk(model, processor, audio, language, device, dtype):
     if isinstance(text, (list, tuple)):
         text = " ".join(str(item) for item in text)
     return str(text).strip()
+
+
+
+def is_degenerate_loop(text):
+    """判断文本是否是「同一单元被反复吐出来」的解码退化。
+
+    同时覆盖两种形态：
+      1. 词级循环：同一句/同一短语重复几十遍（"I never know. " x 60）；
+      2. 字符级循环：同一字符或短单元无空格重复（"あ"x429、"ふん"x150）。
+         日语没有词间空格，这类循环按 token 切分只有 1 个 token，必须
+         走字符级判定才拦得住。
+
+    关键约束：真实的语气重复（"はい。はい。はい。"、"あ。あ。あ。"）绝不能
+    误判，否则会把正常对白整块丢掉——那比幻觉本身更糟。因此要求重复段
+    总长度达到 LOOP_MIN_SPAN_CHARS，真实语气重复远达不到这个长度。
+
+    这是生成层的兜底，与 Go 侧 subtitleclean 的清洗互为两道防线。
+    """
+    if not text:
+        return False
+    # 整体太短的不可能是解码退化，直接放行（保护短句重复）。
+    if len(text) < LOOP_MIN_SPAN_CHARS:
+        return False
+
+    if _is_token_loop(text):
+        return True
+    return _is_char_loop(text)
+
+
+def _is_token_loop(text):
+    """词/句级循环：同一 token 单元连续重复并覆盖大部分文本。"""
+    tokens = [t for t in re.split(r"(?<=[.!?。！？])\s*|\s+", text) if t]
+    if len(tokens) < 3:
+        return False
+
+    total = len(tokens)
+    for unit_len in range(1, min(12, total // 2) + 1):
+        i = 0
+        while i + unit_len * 3 <= total:
+            unit = tokens[i:i + unit_len]
+            repeat = 1
+            while tokens[i + repeat * unit_len: i + (repeat + 1) * unit_len] == unit:
+                repeat += 1
+            if repeat >= 3:
+                coverage = float(repeat * unit_len) / float(total)
+                span_chars = len(" ".join(tokens[i:i + unit_len * repeat]))
+                # 三重闸门，缺一不可：
+                #   1) 覆盖率：重复段要占据大部分文本；
+                #   2) 重复段长度：太短的是语气重复，不是幻觉；
+                #   3) 重复次数上限：真实说话极少把同一句连说 5 次以上，
+                #      而解码退化会连吐几十次。用次数上限把
+                #      "ちょっと待って。"x3（30 字，正常强调）和
+                #      "I never know."x60（真循环）区分开。
+                if (
+                    coverage >= LOOP_COVERAGE_THRESHOLD
+                    and span_chars >= LOOP_MIN_SPAN_CHARS
+                    and repeat >= LOOP_MIN_LOOP_REPEAT
+                ):
+                    if len(" ".join(unit)) <= LOOP_MAX_UNIT_CHARS:
+                        return True
+                i += repeat * unit_len
+            else:
+                i += 1
+    return False
+
+
+def _is_char_loop(text):
+    """字符级循环：同一单元（1..4 字符）无间断重复，且总长足够。
+
+    与 Go 侧 subtitleclean.CollapseLongLoops 的判定保持一致，
+    这样两道防线对同一份文本的结论不会互相矛盾。
+    """
+    runes = list(text)
+    n = len(runes)
+    i = 0
+    while i < n:
+        for unit_len in range(1, LOOP_CHAR_UNIT_MAX + 1):
+            if i + unit_len * LOOP_MIN_REPEAT > n:
+                break
+            unit = runes[i:i + unit_len]
+            repeat = 1
+            while runes[i + repeat * unit_len: i + (repeat + 1) * unit_len] == unit:
+                repeat += 1
+            if repeat >= LOOP_MIN_REPEAT and unit_len * repeat >= LOOP_MIN_SPAN_CHARS:
+                return True
+        i += 1
+    return False
 
 
 def split_chunks(total_seconds):
@@ -400,7 +629,28 @@ def transcribe(request):
     device, dtype = detect_device_dtype(model)
 
     language = normalize_language(request.get("language"))
+
+    # cohere 这类模型不做语言检测（模型文档原文：The model does not perform
+    # language detection, so this is required），没有语言 prompt 时会退化成
+    # 在噪声段乱猜语种，产出大量英语/葡语幻觉。所以语言必须显式给出：
+    # 缺失时直接失败并告诉用户怎么改，而不是静默产出一堆垃圾字幕。
+    if language is None and callable(getattr(model, "build_prompt", None)):
+        supported = getattr(getattr(model, "config", None), "supported_languages", None)
+        hint = ""
+        if supported:
+            hint = "。该模型支持：%s" % "、".join(sorted(supported))
+        fail(
+            "该模型不支持自动检测语言，必须在任务里指定源语言（例如日语选 ja）%s" % hint
+        )
+
     emit({"type": "progress", "ratio": 0, "message": "开始识别"})
+
+    # 语言 prompt 必须在循环外构造一次，避免每块都重建。
+    prompt = build_decoder_prompt(model, language)
+    if prompt:
+        log("使用语言 prompt：%s" % prompt)
+    else:
+        log("该模型未提供 build_prompt，将不带语言约束识别")
 
     chunks = split_chunks(duration)
     if not chunks:
@@ -410,6 +660,7 @@ def transcribe(request):
 
     sequence = 0
     skipped_silent = 0
+    skipped_loop = 0
     last_emit = {"ratio": -1.0}
     for index, (start, end) in enumerate(chunks):
         begin_sample = int(start * 16000)
@@ -433,10 +684,18 @@ def transcribe(request):
             continue
 
         try:
-            text = transcribe_chunk(model, processor, np.asarray(piece), language, device, dtype)
+            text = transcribe_chunk(
+                model, processor, np.asarray(piece), language, device, dtype, prompt=prompt
+            )
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             fail("识别第 %d 段（%.1f-%.1f 秒）失败：%s" % (index + 1, start, end, exc))
+
+        # 解码循环兜底：即便加了 no_repeat_ngram_size，仍可能整段是同一句重复。
+        if text and is_degenerate_loop(text):
+            skipped_loop += 1
+            log("丢弃疑似解码循环片段 %.1f-%.1f 秒：%s" % (start, end, text[:80]))
+            text = ""
 
         if text:
             sequence += 1
@@ -464,6 +723,8 @@ def transcribe(request):
         log("所有音频片段都没有识别出文本，可能是静音或语言设置不匹配")
     if skipped_silent:
         log("共跳过 %d 个静音片段（模型在静音上会产生幻觉文本）" % skipped_silent)
+    if skipped_loop:
+        log("共丢弃 %d 个解码循环片段（模型陷入重复输出）" % skipped_loop)
 
     emit({
         "type": "done",
