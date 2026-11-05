@@ -14,6 +14,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"transcribe-whisper/internal/asr"
+	"transcribe-whisper/internal/media"
 	"transcribe-whisper/internal/modelmanager"
 	"transcribe-whisper/internal/repository"
 	"transcribe-whisper/internal/service"
@@ -26,6 +27,39 @@ var (
 	supportedProviders  = map[string]bool{"ollama": true, "openai": true, "none": true}
 	supportedAsrDevices = map[string]bool{"auto": true, "cpu": true, "cuda": true}
 )
+
+// supportedSampleRates 是降噪输出可选的采样率，0 表示沿用默认 16000。
+var supportedSampleRates = map[int]bool{0: true, 16000: true, 32000: true, 44100: true, 48000: true}
+
+// clampSampleRate 把采样率规范成受支持的值，未知值回落 0（默认）。
+func clampSampleRate(value int) int {
+	if supportedSampleRates[value] {
+		return value
+	}
+	return 0
+}
+
+// clampInt 把整数限制在 [lo, hi]。
+func clampInt(value, lo, hi int) int {
+	if value < lo {
+		return lo
+	}
+	if value > hi {
+		return hi
+	}
+	return value
+}
+
+// clampFloat 把浮点限制在 [lo, hi]。
+func clampFloat(value, lo, hi float64) float64 {
+	if value < lo {
+		return lo
+	}
+	if value > hi {
+		return hi
+	}
+	return value
+}
 
 // GetDashboard 返回全部任务与当前活动任务。
 func (a *App) GetDashboard() Dashboard {
@@ -706,7 +740,68 @@ func (a *App) GetSettings() SettingsSnapshot {
 		GlossaryText:         formatGlossary(settings.Glossary),
 		HuggingFaceTokenSet:  strings.TrimSpace(settings.HuggingFaceToken) != "",
 		LocalModels:          settings.LocalModels,
+
+		NoiseReduction:           normalizeNoiseReduction(settings.NoiseReduction),
+		NoiseReductionFilter:     settings.NoiseReductionFilter,
+		NoiseReductionSampleRate: settings.NoiseReductionSampleRate,
+
+		BeamSize:                  resolveBeamSize(settings.BeamSize),
+		VadFilter:                 settings.VadFilter,
+		VadThreshold:              resolveDefaultFloat(settings.VadThreshold, 0.5),
+		VadMinSilenceMs:           resolveDefaultInt(settings.VadMinSilenceMs, 500),
+		VadPaddingMs:              resolveDefaultInt(settings.VadPaddingMs, 400),
+		HallucinationFilter:       normalizeHallucinationFilter(settings.HallucinationFilter),
+		ConditionOnPreviousText:   settings.ConditionOnPreviousText,
+		NoSpeechThreshold:         resolveDefaultFloat(settings.NoSpeechThreshold, 0.6),
+		CompressionRatioThreshold: resolveDefaultFloat(settings.CompressionRatioThreshold, 2.4),
 	}
+}
+
+// normalizeNoiseReduction 把降噪预设规范成合法值，未知值回落 off。
+func normalizeNoiseReduction(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case media.PresetLight, media.PresetStandard, media.PresetStrong, media.PresetCustom:
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return media.PresetOff
+	}
+}
+
+// normalizeHallucinationFilter 把幻觉过滤等级规范成合法值，未知值回落 medium。
+func normalizeHallucinationFilter(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "off", "low", "high":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "medium"
+	}
+}
+
+// resolveBeamSize 返回可用的 beam_size：设置层把 0 视为未设置，这里补默认值。
+func resolveBeamSize(value int) int {
+	if value < 1 {
+		return 5
+	}
+	if value > 10 {
+		return 10
+	}
+	return value
+}
+
+// resolveDefaultFloat 在值为零（未设置）时返回默认值。
+func resolveDefaultFloat(value, fallback float64) float64 {
+	if value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+// resolveDefaultInt 在值为零（未设置）时返回默认值。
+func resolveDefaultInt(value, fallback int) int {
+	if value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 // UpdateSettings 部分更新设置。
@@ -764,6 +859,46 @@ func (a *App) UpdateSettings(patch SettingsPatch) (*SettingsSnapshot, error) {
 			return nil, err
 		}
 		current.Glossary = glossary
+	}
+
+	// 音频降噪。
+	if patch.NoiseReduction != nil {
+		current.NoiseReduction = normalizeNoiseReduction(*patch.NoiseReduction)
+	}
+	if patch.NoiseReductionFilter != nil {
+		current.NoiseReductionFilter = strings.TrimSpace(*patch.NoiseReductionFilter)
+	}
+	if patch.NoiseReductionSampleRate != nil {
+		current.NoiseReductionSampleRate = clampSampleRate(*patch.NoiseReductionSampleRate)
+	}
+
+	// 识别准确性参数：越界值夹取到合法区间，0 保持 0（由上层回落默认）。
+	if patch.BeamSize != nil {
+		current.BeamSize = clampInt(*patch.BeamSize, 0, 10)
+	}
+	if patch.VadFilter != nil {
+		current.VadFilter = *patch.VadFilter
+	}
+	if patch.VadThreshold != nil {
+		current.VadThreshold = clampFloat(*patch.VadThreshold, 0, 1)
+	}
+	if patch.VadMinSilenceMs != nil {
+		current.VadMinSilenceMs = clampInt(*patch.VadMinSilenceMs, 0, 2000)
+	}
+	if patch.VadPaddingMs != nil {
+		current.VadPaddingMs = clampInt(*patch.VadPaddingMs, 0, 5000)
+	}
+	if patch.HallucinationFilter != nil {
+		current.HallucinationFilter = normalizeHallucinationFilter(*patch.HallucinationFilter)
+	}
+	if patch.ConditionOnPreviousText != nil {
+		current.ConditionOnPreviousText = *patch.ConditionOnPreviousText
+	}
+	if patch.NoSpeechThreshold != nil {
+		current.NoSpeechThreshold = clampFloat(*patch.NoSpeechThreshold, 0, 1)
+	}
+	if patch.CompressionRatioThreshold != nil {
+		current.CompressionRatioThreshold = clampFloat(*patch.CompressionRatioThreshold, 0, 10)
 	}
 
 	if current.AsrEngine != "" && !supportedEngines[current.AsrEngine] {

@@ -143,6 +143,30 @@ export interface SettingsSnapshot {
   huggingFaceTokenSet: boolean;
   /** 自选的本地识别模型：标识 -> 目录 */
   localModels: Record<string, string>;
+  /** 降噪预设：off / light / standard / strong / custom */
+  noiseReduction: string;
+  /** 自定义 FFmpeg -af 滤镜链，仅在 noiseReduction 为 custom 时生效 */
+  noiseReductionFilter: string;
+  /** 降噪输出采样率：0 表示沿用 16000；可选 16000 / 32000 / 44100 / 48000 */
+  noiseReductionSampleRate: number;
+  /** 识别束宽：1..10，越大越准越慢 */
+  beamSize: number;
+  /** 是否启用语音活动检测（VAD） */
+  vadFilter: boolean;
+  /** VAD 灵敏度：0.1..0.9 */
+  vadThreshold: number;
+  /** 最短静音间隔（毫秒）：100..2000 */
+  vadMinSilenceMs: number;
+  /** 语音前后留白（毫秒）：0..2000 */
+  vadPaddingMs: number;
+  /** 幻觉字幕过滤强度：off / low / medium / high */
+  hallucinationFilter: string;
+  /** 是否以上一条识别结果作为上下文；关掉可显著减少重复幻觉 */
+  conditionOnPreviousText: boolean;
+  /** 无语音判定阈值：0..1，越高越容易判为无语音 */
+  noSpeechThreshold: number;
+  /** 压缩比阈值：1.0..5.0，越高越宽松 */
+  compressionRatioThreshold: number;
 }
 
 /** 设置的部分更新入参，未给出的字段表示保持不变 */
@@ -165,6 +189,30 @@ export interface SettingsPatch {
   glossaryText?: string;
   /** HF 访问令牌；空串表示保持不变，"-" 表示清除 */
   huggingFaceToken?: string;
+  /** 降噪预设：off / light / standard / strong / custom */
+  noiseReduction?: string;
+  /** 自定义 FFmpeg -af 滤镜链，仅 custom 预设生效 */
+  noiseReductionFilter?: string;
+  /** 降噪输出采样率：0 表示沿用 16000 */
+  noiseReductionSampleRate?: number;
+  /** 识别束宽：1..10 */
+  beamSize?: number;
+  /** 是否启用语音活动检测 */
+  vadFilter?: boolean;
+  /** VAD 灵敏度：0.1..0.9 */
+  vadThreshold?: number;
+  /** 最短静音间隔（毫秒）：100..2000 */
+  vadMinSilenceMs?: number;
+  /** 语音前后留白（毫秒）：0..2000 */
+  vadPaddingMs?: number;
+  /** 幻觉字幕过滤强度：off / low / medium / high */
+  hallucinationFilter?: string;
+  /** 是否以上一条识别结果作为上下文 */
+  conditionOnPreviousText?: boolean;
+  /** 无语音判定阈值：0..1 */
+  noSpeechThreshold?: number;
+  /** 压缩比阈值：1.0..5.0 */
+  compressionRatioThreshold?: number;
 }
 
 /** 字幕压制入参 */
@@ -327,4 +375,30 @@ export const TRANSLATION_STYLES: { value: string; label: string; hint?: string }
     label: '露骨（成人内容）',
     hint: '面向成人影音：直白翻译性相关内容，不淡化、不净化、不回避',
   },
+];
+
+/** 音频降噪预设选项 */
+export const NOISE_REDUCTION_PRESETS: { value: string; label: string; hint: string }[] = [
+  { value: 'off', label: '关闭降噪', hint: '保持原始音频' },
+  { value: 'light', label: '轻度', hint: '去低频轰鸣与底噪，几乎不改变音色' },
+  { value: 'standard', label: '标准（推荐）', hint: '降噪 + 动态压缩 + 响度归一化' },
+  { value: 'strong', label: '强力', hint: '噪声环境适用，可能略微损失齿音细节' },
+  { value: 'custom', label: '自定义滤镜链', hint: '直接填写 FFmpeg -af 滤镜链' },
+];
+
+/** 降噪输出采样率选项：0 表示沿用默认的 16000 */
+export const NOISE_REDUCTION_SAMPLE_RATES: { value: number; label: string }[] = [
+  { value: 0, label: '默认（16000 Hz）' },
+  { value: 16000, label: '16000 Hz' },
+  { value: 32000, label: '32000 Hz' },
+  { value: 44100, label: '44100 Hz' },
+  { value: 48000, label: '48000 Hz' },
+];
+
+/** 幻觉字幕过滤强度选项 */
+export const HALLUCINATION_FILTERS: { value: string; label: string; hint: string }[] = [
+  { value: 'off', label: '关闭', hint: '保留全部识别结果' },
+  { value: 'low', label: '轻度', hint: '仅去除表情符号与纯标点' },
+  { value: 'medium', label: '标准（推荐）', hint: '另去除音效描述与重复条目' },
+  { value: 'high', label: '严格', hint: '另去除常见幻觉短语与超短条目' },
 ];

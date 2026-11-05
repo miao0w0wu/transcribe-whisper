@@ -2,7 +2,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as api from '../lib/api';
 import type { ModelInfo, OllamaModelInfo, SettingsPatch, SettingsSnapshot } from '../lib/types';
-import { ASR_DEVICES, ASR_ENGINES, COMPUTE_TYPES, TRANSLATION_PROVIDERS, TRANSLATION_STYLES } from '../lib/types';
+import {
+  ASR_DEVICES,
+  ASR_ENGINES,
+  COMPUTE_TYPES,
+  HALLUCINATION_FILTERS,
+  NOISE_REDUCTION_PRESETS,
+  NOISE_REDUCTION_SAMPLE_RATES,
+  TRANSLATION_PROVIDERS,
+  TRANSLATION_STYLES,
+} from '../lib/types';
 import { DemoNotice, ErrorBar, FormField, LoadingState, NoticeBar } from './components/primitives';
 import { FFmpegPanel } from './settings/FFmpegPanel';
 
@@ -27,6 +36,57 @@ interface SettingsForm {
   cloudPrivacyConfirm: boolean;
   translationStyle: string;
   glossaryText: string;
+  /** 降噪预设：off / light / standard / strong / custom */
+  noiseReduction: string;
+  /** 自定义 FFmpeg -af 滤镜链 */
+  noiseReductionFilter: string;
+  /** 降噪输出采样率（字符串存原样输入，保存时再解析），0 表示沿用 16000 */
+  noiseReductionSampleRate: string;
+  /** 识别束宽 1..10 */
+  beamSize: string;
+  /** 是否启用 VAD */
+  vadFilter: boolean;
+  /** VAD 灵敏度 0.1..0.9 */
+  vadThreshold: string;
+  /** 最短静音间隔（毫秒）100..2000 */
+  vadMinSilenceMs: string;
+  /** 语音前后留白（毫秒）0..2000 */
+  vadPaddingMs: string;
+  /** 幻觉字幕过滤强度 */
+  hallucinationFilter: string;
+  /** 是否以上一条识别结果作为上下文 */
+  conditionOnPreviousText: boolean;
+  /** 无语音判定阈值 0..1 */
+  noSpeechThreshold: string;
+  /** 压缩比阈值 1.0..5.0 */
+  compressionRatioThreshold: string;
+}
+
+/** 数值字段兜底：缺失或非法时回落到默认值，避免输入框出现 NaN */
+function toNumber(value: number | null | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/** 把后端返回的数值转成输入框文本，顺带抹掉浮点误差（如 0.30000000000000004） */
+function toNumberText(value: number | null | undefined, fallback: number): string {
+  const resolved = toNumber(value, fallback);
+  // 先按 4 位小数取整再转字符串，最后去掉多余的尾随零。
+  return String(Number(resolved.toFixed(4)));
+}
+
+/** 数字输入框的值统一用字符串保存，空串或非法输入回落到 fallback */
+function parseNumber(text: string, fallback: number): number {
+  const trimmed = text.trim();
+  if (!trimmed) return fallback;
+  const value = Number(trimmed);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+/** 把数值夹到闭区间内，防止手输超范围的值被送到后端 */
+function clamp(value: number, min: number, max: number): number {
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
 }
 
 function toForm(snapshot: SettingsSnapshot): SettingsForm {
@@ -46,6 +106,18 @@ function toForm(snapshot: SettingsSnapshot): SettingsForm {
     cloudPrivacyConfirm: Boolean(snapshot.cloudPrivacyConfirm),
     translationStyle: snapshot.translationStyle || 'subtitle',
     glossaryText: snapshot.glossaryText ?? '',
+    noiseReduction: snapshot.noiseReduction || 'off',
+    noiseReductionFilter: snapshot.noiseReductionFilter ?? '',
+    noiseReductionSampleRate: toNumberText(snapshot.noiseReductionSampleRate, 0),
+    beamSize: toNumberText(snapshot.beamSize, 5),
+    vadFilter: snapshot.vadFilter ?? true,
+    vadThreshold: toNumberText(snapshot.vadThreshold, 0.5),
+    vadMinSilenceMs: toNumberText(snapshot.vadMinSilenceMs, 500),
+    vadPaddingMs: toNumberText(snapshot.vadPaddingMs, 400),
+    hallucinationFilter: snapshot.hallucinationFilter || 'medium',
+    conditionOnPreviousText: Boolean(snapshot.conditionOnPreviousText),
+    noSpeechThreshold: toNumberText(snapshot.noSpeechThreshold, 0.6),
+    compressionRatioThreshold: toNumberText(snapshot.compressionRatioThreshold, 2.4),
   };
 }
 
@@ -68,6 +140,41 @@ function buildPatch(form: SettingsForm, snapshot: SettingsSnapshot): SettingsPat
   if (form.cloudPrivacyConfirm !== base.cloudPrivacyConfirm) patch.cloudPrivacyConfirm = form.cloudPrivacyConfirm;
   if (form.translationStyle !== base.translationStyle) patch.translationStyle = form.translationStyle;
   if (form.glossaryText !== base.glossaryText) patch.glossaryText = form.glossaryText;
+  if (form.noiseReduction !== base.noiseReduction) patch.noiseReduction = form.noiseReduction;
+  if (form.noiseReductionFilter !== base.noiseReductionFilter) {
+    patch.noiseReductionFilter = form.noiseReductionFilter.trim();
+  }
+  // 数值字段按解析后的值比较，避免「输入 5 与 5.0」这类文本差异被误判成改动。
+  // 写入 patch 前统一夹到合法区间，手输越界值不会送到后端。
+  const sampleRate = parseNumber(form.noiseReductionSampleRate, 0);
+  if (sampleRate !== parseNumber(base.noiseReductionSampleRate, 0)) {
+    patch.noiseReductionSampleRate = Math.max(0, Math.round(sampleRate));
+  }
+  const beamSize = clamp(Math.round(parseNumber(form.beamSize, 5)), 1, 10);
+  if (beamSize !== clamp(Math.round(parseNumber(base.beamSize, 5)), 1, 10)) patch.beamSize = beamSize;
+  if (form.vadFilter !== base.vadFilter) patch.vadFilter = form.vadFilter;
+  const vadThreshold = clamp(parseNumber(form.vadThreshold, 0.5), 0.1, 0.9);
+  if (vadThreshold !== clamp(parseNumber(base.vadThreshold, 0.5), 0.1, 0.9)) patch.vadThreshold = vadThreshold;
+  const vadMinSilenceMs = clamp(Math.round(parseNumber(form.vadMinSilenceMs, 500)), 100, 2000);
+  if (vadMinSilenceMs !== clamp(Math.round(parseNumber(base.vadMinSilenceMs, 500)), 100, 2000)) {
+    patch.vadMinSilenceMs = vadMinSilenceMs;
+  }
+  const vadPaddingMs = clamp(Math.round(parseNumber(form.vadPaddingMs, 400)), 0, 2000);
+  if (vadPaddingMs !== clamp(Math.round(parseNumber(base.vadPaddingMs, 400)), 0, 2000)) {
+    patch.vadPaddingMs = vadPaddingMs;
+  }
+  if (form.hallucinationFilter !== base.hallucinationFilter) patch.hallucinationFilter = form.hallucinationFilter;
+  if (form.conditionOnPreviousText !== base.conditionOnPreviousText) {
+    patch.conditionOnPreviousText = form.conditionOnPreviousText;
+  }
+  const noSpeechThreshold = clamp(parseNumber(form.noSpeechThreshold, 0.6), 0, 1);
+  if (noSpeechThreshold !== clamp(parseNumber(base.noSpeechThreshold, 0.6), 0, 1)) {
+    patch.noSpeechThreshold = noSpeechThreshold;
+  }
+  const compressionRatioThreshold = clamp(parseNumber(form.compressionRatioThreshold, 2.4), 1, 5);
+  if (compressionRatioThreshold !== clamp(parseNumber(base.compressionRatioThreshold, 2.4), 1, 5)) {
+    patch.compressionRatioThreshold = compressionRatioThreshold;
+  }
   return patch;
 }
 
@@ -257,6 +364,9 @@ export function SettingsView({ demo }: SettingsViewProps) {
   const isCloud = form.translationProvider === 'openai';
   const providerMeta = TRANSLATION_PROVIDERS.find((item) => item.value === form.translationProvider);
   const currentStyleHint = TRANSLATION_STYLES.find((item) => item.value === form.translationStyle)?.hint ?? '';
+  const currentNoiseHint = NOISE_REDUCTION_PRESETS.find((item) => item.value === form.noiseReduction)?.hint ?? '';
+  const currentHallucinationHint =
+    HALLUCINATION_FILTERS.find((item) => item.value === form.hallucinationFilter)?.hint ?? '';
 
   return (
     <div className="page narrow-page">
@@ -510,6 +620,205 @@ export function SettingsView({ demo }: SettingsViewProps) {
                 ))}
               </select>
             </FormField>
+          </div>
+        </div>
+
+        <div className="settings-section">
+          <h3>音频降噪</h3>
+          <p className="settings-note">
+            在识别前先对音频做降噪处理，可明显减少背景杂音导致的错字与幻觉。滤镜由 FFmpeg 执行，
+            本机 FFmpeg 不支持的滤镜会被自动剔除并降级，不会让任务失败。
+          </p>
+          <div className="form-grid">
+            <FormField label="降噪强度" hint="轻度适合安静录音；噪声环境建议「强力」">
+              <select
+                className="select"
+                value={form.noiseReduction}
+                onChange={(event) => patchForm({ noiseReduction: event.target.value })}
+              >
+                {NOISE_REDUCTION_PRESETS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+                {/* 库里可能存着不在预设里的取值，避免下拉框显示空白 */}
+                {NOISE_REDUCTION_PRESETS.every((item) => item.value !== form.noiseReduction) ? (
+                  <option value={form.noiseReduction}>{form.noiseReduction}（未知取值）</option>
+                ) : null}
+              </select>
+            </FormField>
+            <FormField label="输出采样率" hint="降噪后的 WAV 采样率；默认为识别用的 16000 Hz">
+              <select
+                className="select"
+                value={form.noiseReductionSampleRate}
+                onChange={(event) => patchForm({ noiseReductionSampleRate: event.target.value })}
+              >
+                {NOISE_REDUCTION_SAMPLE_RATES.map((item) => (
+                  <option key={item.value} value={String(item.value)}>
+                    {item.label}
+                  </option>
+                ))}
+                {/* 库里可能存着不在预设里的采样率，避免下拉框显示空白 */}
+                {NOISE_REDUCTION_SAMPLE_RATES.every((item) => String(item.value) !== form.noiseReductionSampleRate) ? (
+                  <option value={form.noiseReductionSampleRate}>{form.noiseReductionSampleRate} Hz（自定义）</option>
+                ) : null}
+              </select>
+            </FormField>
+          </div>
+          {currentNoiseHint ? <div className="inline-hint">{currentNoiseHint}</div> : null}
+          {form.noiseReduction === 'custom' ? (
+            <div className="form-grid form-grid-spaced">
+              <FormField
+                label="自定义滤镜链"
+                hint="直接填写 FFmpeg 的 -af 参数，多个滤镜用英文逗号串联；本应用不会对其做能力检查。"
+              >
+                <input
+                  className="text-input"
+                  spellCheck={false}
+                  value={form.noiseReductionFilter}
+                  placeholder="highpass=f=80,afftdn=nf=-25"
+                  onChange={(event) => patchForm({ noiseReductionFilter: event.target.value })}
+                />
+              </FormField>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="settings-section">
+          <h3>识别准确性</h3>
+          <p className="settings-note">
+            这些参数会传给识别引擎。数值越大通常越准但越慢；默认值适用于大多数素材，改动前建议先用一段短音频试听效果。
+          </p>
+          <div className="form-grid">
+            <FormField label="识别束宽" hint="1–10，越大越准越慢；默认 5">
+              <input
+                className="text-input"
+                type="number"
+                min={1}
+                max={10}
+                step={1}
+                value={form.beamSize}
+                onChange={(event) => patchForm({ beamSize: event.target.value })}
+              />
+            </FormField>
+            <FormField label="无语音判定阈值" hint="0–1，越高越容易判为无语音；默认 0.6">
+              <input
+                className="text-input"
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={form.noSpeechThreshold}
+                onChange={(event) => patchForm({ noSpeechThreshold: event.target.value })}
+              />
+            </FormField>
+            <FormField label="压缩比阈值" hint="1.0–5.0，越高越宽松（更少丢弃重复文本）；默认 2.4">
+              <input
+                className="text-input"
+                type="number"
+                min={1}
+                max={5}
+                step={0.1}
+                value={form.compressionRatioThreshold}
+                onChange={(event) => patchForm({ compressionRatioThreshold: event.target.value })}
+              />
+            </FormField>
+            <FormField label="幻觉字幕过滤" hint="按规则清理无意义条目，强度越高丢得越多">
+              <select
+                className="select"
+                value={form.hallucinationFilter}
+                onChange={(event) => patchForm({ hallucinationFilter: event.target.value })}
+              >
+                {HALLUCINATION_FILTERS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+                {/* 库里可能存着不在预设里的取值，避免下拉框显示空白 */}
+                {HALLUCINATION_FILTERS.every((item) => item.value !== form.hallucinationFilter) ? (
+                  <option value={form.hallucinationFilter}>{form.hallucinationFilter}（未知取值）</option>
+                ) : null}
+              </select>
+            </FormField>
+          </div>
+          {currentHallucinationHint ? <div className="inline-hint">{currentHallucinationHint}</div> : null}
+
+          <div className="mode-row mode-row-spaced">
+            <div>
+              <strong>语音活动检测（VAD）</strong>
+              <span>先找出有声片段再识别，能跳过静音与纯音乐段落，减少无意义的重复字幕。</span>
+            </div>
+            <button
+              type="button"
+              className={`toggle ${form.vadFilter ? 'on' : ''}`}
+              aria-pressed={form.vadFilter}
+              onClick={() => patchForm({ vadFilter: !form.vadFilter })}
+            >
+              <i />
+            </button>
+          </div>
+
+          <div className="form-grid form-grid-spaced">
+            <FormField
+              label="VAD 灵敏度"
+              hint={form.vadFilter ? '0.1–0.9，越大越容易判为语音；默认 0.5' : '关闭 VAD 后此项不生效'}
+            >
+              <input
+                className="text-input"
+                type="number"
+                min={0.1}
+                max={0.9}
+                step={0.05}
+                value={form.vadThreshold}
+                disabled={!form.vadFilter}
+                onChange={(event) => patchForm({ vadThreshold: event.target.value })}
+              />
+            </FormField>
+            <FormField
+              label="最短静音间隔"
+              hint={form.vadFilter ? '100–2000 毫秒，超过此时长才算一段静音；默认 500' : '关闭 VAD 后此项不生效'}
+            >
+              <input
+                className="text-input"
+                type="number"
+                min={100}
+                max={2000}
+                step={50}
+                value={form.vadMinSilenceMs}
+                disabled={!form.vadFilter}
+                onChange={(event) => patchForm({ vadMinSilenceMs: event.target.value })}
+              />
+            </FormField>
+            <FormField
+              label="语音前后留白"
+              hint={form.vadFilter ? '0–2000 毫秒，避免切掉句首句尾；默认 400' : '关闭 VAD 后此项不生效'}
+            >
+              <input
+                className="text-input"
+                type="number"
+                min={0}
+                max={2000}
+                step={50}
+                value={form.vadPaddingMs}
+                disabled={!form.vadFilter}
+                onChange={(event) => patchForm({ vadPaddingMs: event.target.value })}
+              />
+            </FormField>
+          </div>
+
+          <div className="mode-row mode-row-spaced">
+            <div>
+              <strong>以上一句识别结果作为上下文</strong>
+              <span>开启后连贯性更好，但更容易重复同一句话；关闭可显著减少重复幻觉。</span>
+            </div>
+            <button
+              type="button"
+              className={`toggle ${form.conditionOnPreviousText ? 'on' : ''}`}
+              aria-pressed={form.conditionOnPreviousText}
+              onClick={() => patchForm({ conditionOnPreviousText: !form.conditionOnPreviousText })}
+            >
+              <i />
+            </button>
           </div>
         </div>
 

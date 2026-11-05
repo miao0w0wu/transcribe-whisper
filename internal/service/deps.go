@@ -23,6 +23,14 @@ type MediaExtractor interface {
 	Extract(ctx context.Context, req media.ExtractRequest) error
 }
 
+// AudioEnhancer 是可选的降噪增强能力。
+//
+// 单独抽成接口而不是并进 MediaExtractor：测试里大量假实现只关心提取，
+// 不实现该方法也不会编译失败；Deps.Enhancer 为 nil 时降噪阶段直接跳过。
+type AudioEnhancer interface {
+	Enhance(ctx context.Context, req media.EnhanceRequest) (media.EnhanceResult, error)
+}
+
 // ModelResolver 负责确保某个模型已经下载到本地，并返回本地目录。
 //
 // 除了下载与目录解析，它还向编排层提供「这个模型该用哪个识别引擎」的
@@ -112,6 +120,8 @@ type TranslationJob struct {
 type Deps struct {
 	Store *repository.Store
 	Media MediaExtractor
+	// Enhancer 负责降噪增强；为 nil 时跳过降噪阶段（等价于关闭降噪）。
+	Enhancer AudioEnhancer
 	// Burner 负责把字幕烧进视频；为 nil 时压制功能不可用。
 	Burner     media.Burner
 	Engine     asr.Engine

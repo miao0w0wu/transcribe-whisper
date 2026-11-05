@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -103,4 +104,49 @@ func defaultModelDir(dataDir string) string {
 		return ""
 	}
 	return filepath.Join(base, "models")
+}
+
+// normalizeForCompare 把路径归一成可直接比较前缀的形式。
+//
+// 做三件事：清理分隔符与末尾斜杠（filepath.Clean）、转绝对路径、
+// Windows 下统一小写（盘符与路径大小写不敏感）。无法归一（空串、
+// 取绝对路径失败）时返回空串，调用方据此判定为「不安全」。
+func normalizeForCompare(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(trimmed)
+	if abs, err := filepath.Abs(cleaned); err == nil {
+		cleaned = abs
+	}
+	// 解析符号链接：临时目录可能经软链接访问（如 macOS 的 /var），
+	// 两边都解析才能正确比较。解析失败就沿用原路径。
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		cleaned = resolved
+	}
+	if runtime.GOOS == "windows" {
+		cleaned = strings.ToLower(cleaned)
+	}
+	return cleaned
+}
+
+// shouldRemoveTempDataDir 判断数据目录是否确实位于系统临时目录之下。
+//
+// 这是 shutdown 删除前的最后一道防线：只有确认目标落在 os.TempDir()
+// 之内才允许删除。真实数据目录（应用旁的绿色版目录、用户配置目录）
+// 无论内部标记如何，都不满足该条件，因此永远不会被删除。
+// 注意「等于临时目录本身」也判为不安全——那会删掉整个系统临时目录。
+func shouldRemoveTempDataDir(dir string) bool {
+	target := normalizeForCompare(dir)
+	if target == "" {
+		return false
+	}
+	tempRoot := normalizeForCompare(os.TempDir())
+	if tempRoot == "" {
+		return false
+	}
+	// 加分隔符再比较前缀：既避免 /tmp-evil 被 /tmp 误判为子目录，
+	// 也天然排除「目标就是临时目录本身」——那会删掉整个系统临时目录。
+	return strings.HasPrefix(target, tempRoot+string(os.PathSeparator))
 }

@@ -356,6 +356,18 @@ export namespace main {
 	    translationStyle?: string;
 	    glossaryText?: string;
 	    huggingFaceToken?: string;
+	    noiseReduction?: string;
+	    noiseReductionFilter?: string;
+	    noiseReductionSampleRate?: number;
+	    beamSize?: number;
+	    vadFilter?: boolean;
+	    vadThreshold?: number;
+	    vadMinSilenceMs?: number;
+	    vadPaddingMs?: number;
+	    hallucinationFilter?: string;
+	    conditionOnPreviousText?: boolean;
+	    noSpeechThreshold?: number;
+	    compressionRatioThreshold?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SettingsPatch(source);
@@ -380,6 +392,18 @@ export namespace main {
 	        this.translationStyle = source["translationStyle"];
 	        this.glossaryText = source["glossaryText"];
 	        this.huggingFaceToken = source["huggingFaceToken"];
+	        this.noiseReduction = source["noiseReduction"];
+	        this.noiseReductionFilter = source["noiseReductionFilter"];
+	        this.noiseReductionSampleRate = source["noiseReductionSampleRate"];
+	        this.beamSize = source["beamSize"];
+	        this.vadFilter = source["vadFilter"];
+	        this.vadThreshold = source["vadThreshold"];
+	        this.vadMinSilenceMs = source["vadMinSilenceMs"];
+	        this.vadPaddingMs = source["vadPaddingMs"];
+	        this.hallucinationFilter = source["hallucinationFilter"];
+	        this.conditionOnPreviousText = source["conditionOnPreviousText"];
+	        this.noSpeechThreshold = source["noSpeechThreshold"];
+	        this.compressionRatioThreshold = source["compressionRatioThreshold"];
 	    }
 	}
 	export class SettingsSnapshot {
@@ -401,6 +425,18 @@ export namespace main {
 	    glossaryText: string;
 	    huggingFaceTokenSet: boolean;
 	    localModels: Record<string, string>;
+	    noiseReduction: string;
+	    noiseReductionFilter: string;
+	    noiseReductionSampleRate: number;
+	    beamSize: number;
+	    vadFilter: boolean;
+	    vadThreshold: number;
+	    vadMinSilenceMs: number;
+	    vadPaddingMs: number;
+	    hallucinationFilter: string;
+	    conditionOnPreviousText: boolean;
+	    noSpeechThreshold: number;
+	    compressionRatioThreshold: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SettingsSnapshot(source);
@@ -426,6 +462,18 @@ export namespace main {
 	        this.glossaryText = source["glossaryText"];
 	        this.huggingFaceTokenSet = source["huggingFaceTokenSet"];
 	        this.localModels = source["localModels"];
+	        this.noiseReduction = source["noiseReduction"];
+	        this.noiseReductionFilter = source["noiseReductionFilter"];
+	        this.noiseReductionSampleRate = source["noiseReductionSampleRate"];
+	        this.beamSize = source["beamSize"];
+	        this.vadFilter = source["vadFilter"];
+	        this.vadThreshold = source["vadThreshold"];
+	        this.vadMinSilenceMs = source["vadMinSilenceMs"];
+	        this.vadPaddingMs = source["vadPaddingMs"];
+	        this.hallucinationFilter = source["hallucinationFilter"];
+	        this.conditionOnPreviousText = source["conditionOnPreviousText"];
+	        this.noSpeechThreshold = source["noSpeechThreshold"];
+	        this.compressionRatioThreshold = source["compressionRatioThreshold"];
 	    }
 	}
 	export class SubtitleSegment {

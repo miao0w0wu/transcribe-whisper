@@ -20,7 +20,9 @@ import (
 // 各阶段在整体进度中的权重，合计 100。
 const (
 	progressExtractStart = 2
-	progressExtractEnd   = 15
+	progressExtractEnd   = 10
+	progressEnhanceStart = 10
+	progressEnhanceEnd   = 15
 	progressAsrEnd       = 80
 	progressTranslateEnd = 98
 	progressDone         = 100
@@ -28,8 +30,10 @@ const (
 
 // 阶段标识，供前端展示与状态机判断。
 const (
-	StageQueued       = "queued"
-	StageExtracting   = "extracting"
+	StageQueued     = "queued"
+	StageExtracting = "extracting"
+	// StageEnhancing 是提取音频后的降噪增强阶段。
+	StageEnhancing    = "enhancing"
 	StageTranscribing = "transcribing"
 	StageTranslating  = "translating"
 	StageCompleted    = "completed"
@@ -97,7 +101,7 @@ func NewQueue(deps Deps) *Queue {
 	}
 }
 
-// SetMedia 替换媒体依赖（提取器与压制器）。
+// SetMedia 替换媒体依赖（提取器、降噪增强器与压制器）。
 //
 // 用在用户在运行时改了 FFmpeg 路径的场景：队列装配时持有的是旧引用，
 // 不同步的话新建任务仍会用旧的（或 nil）实现。传 nil 表示「当前不可用」，
@@ -110,10 +114,12 @@ func (q *Queue) SetMedia(ffmpeg *media.FFmpeg) {
 	defer q.mu.Unlock()
 	if ffmpeg == nil {
 		q.deps.Media = nil
+		q.deps.Enhancer = nil
 		q.deps.Burner = nil
 		return
 	}
 	q.deps.Media = ffmpeg
+	q.deps.Enhancer = ffmpeg
 	q.deps.Burner = ffmpeg
 }
 

@@ -132,6 +132,24 @@ type SettingsSnapshot struct {
 	HuggingFaceTokenSet bool `json:"huggingFaceTokenSet"`
 	// LocalModels 是用户自选的本地识别模型：标识 -> 目录。
 	LocalModels map[string]string `json:"localModels"`
+
+	// 音频降噪：off / light / standard / strong / custom。
+	NoiseReduction string `json:"noiseReduction"`
+	// NoiseReductionFilter 仅在 NoiseReduction == "custom" 时生效。
+	NoiseReductionFilter string `json:"noiseReductionFilter"`
+	// NoiseReductionSampleRate 为 0 表示沿用 16000。
+	NoiseReductionSampleRate int `json:"noiseReductionSampleRate"`
+
+	// 识别准确性参数。
+	BeamSize                  int     `json:"beamSize"`
+	VadFilter                 bool    `json:"vadFilter"`
+	VadThreshold              float64 `json:"vadThreshold"`
+	VadMinSilenceMs           int     `json:"vadMinSilenceMs"`
+	VadPaddingMs              int     `json:"vadPaddingMs"`
+	HallucinationFilter       string  `json:"hallucinationFilter"`
+	ConditionOnPreviousText   bool    `json:"conditionOnPreviousText"`
+	NoSpeechThreshold         float64 `json:"noSpeechThreshold"`
+	CompressionRatioThreshold float64 `json:"compressionRatioThreshold"`
 }
 
 // SettingsPatch 是设置的部分更新入参，空字段表示保持不变。
@@ -156,6 +174,22 @@ type SettingsPatch struct {
 	// HuggingFaceToken 是 HF 访问令牌，用于下载受限（gated）仓库。
 	// 传空串表示保持不变；传 "-" 表示清除。
 	HuggingFaceToken *string `json:"huggingFaceToken"`
+
+	// 音频降噪。
+	NoiseReduction           *string `json:"noiseReduction"`
+	NoiseReductionFilter     *string `json:"noiseReductionFilter"`
+	NoiseReductionSampleRate *int    `json:"noiseReductionSampleRate"`
+
+	// 识别准确性参数。
+	BeamSize                  *int     `json:"beamSize"`
+	VadFilter                 *bool    `json:"vadFilter"`
+	VadThreshold              *float64 `json:"vadThreshold"`
+	VadMinSilenceMs           *int     `json:"vadMinSilenceMs"`
+	VadPaddingMs              *int     `json:"vadPaddingMs"`
+	HallucinationFilter       *string  `json:"hallucinationFilter"`
+	ConditionOnPreviousText   *bool    `json:"conditionOnPreviousText"`
+	NoSpeechThreshold         *float64 `json:"noSpeechThreshold"`
+	CompressionRatioThreshold *float64 `json:"compressionRatioThreshold"`
 }
 
 // BurnSubtitlesInput 是字幕压制的入参。

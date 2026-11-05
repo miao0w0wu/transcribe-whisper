@@ -98,6 +98,32 @@ type SettingsRecord struct {
 	// HuggingFaceToken 是绘制受限（gated）仓库时用的访问令牌。
 	// 只用于下载模型权重，不会发给翻译服务。
 	HuggingFaceToken string
+
+	// NoiseReduction 是降噪预设：off / light / standard / strong / custom。
+	NoiseReduction string
+	// NoiseReductionFilter 是自定义 FFmpeg -af 滤镜链，仅 NoiseReduction == "custom" 时生效。
+	NoiseReductionFilter string
+	// NoiseReductionSampleRate 是降噪输出的采样率，0 表示沿用默认的 16000。
+	NoiseReductionSampleRate int
+
+	// BeamSize 是识别束宽，1..10，越大越准越慢。
+	BeamSize int
+	// VadFilter 表示是否启用语音活动检测。
+	VadFilter bool
+	// VadThreshold 是 VAD 灵敏度，0.1..0.9。
+	VadThreshold float64
+	// VadMinSilenceMs 是最短静音间隔（毫秒），100..2000。
+	VadMinSilenceMs int
+	// VadPaddingMs 是语音前后留白（毫秒），0..2000。
+	VadPaddingMs int
+	// HallucinationFilter 是幻觉字幕过滤等级：off / low / medium / high。
+	HallucinationFilter string
+	// ConditionOnPreviousText 表示是否把上一段文本作为解码上下文；关掉可显著减少重复幻觉。
+	ConditionOnPreviousText bool
+	// NoSpeechThreshold 是判为无语音的概率阈值，0..1，越高越容易判为无语音。
+	NoSpeechThreshold float64
+	// CompressionRatioThreshold 是压缩比阈值，1.0..5.0，越高越宽松。
+	CompressionRatioThreshold float64
 }
 
 // Store 封装数据库句柄。所有方法都要是并发安全的。
@@ -195,7 +221,19 @@ func (s *Store) migrate() error {
 			translation_style TEXT NOT NULL DEFAULT 'subtitle',
 			glossary_json TEXT NOT NULL DEFAULT '{}',
 			local_models_json TEXT NOT NULL DEFAULT '{}',
-			hugging_face_token TEXT NOT NULL DEFAULT ''
+			hugging_face_token TEXT NOT NULL DEFAULT '',
+			noise_reduction TEXT NOT NULL DEFAULT 'off',
+			noise_reduction_filter TEXT NOT NULL DEFAULT '',
+			noise_reduction_sample_rate INTEGER NOT NULL DEFAULT 0,
+			beam_size INTEGER NOT NULL DEFAULT 5,
+			vad_filter INTEGER NOT NULL DEFAULT 1,
+			vad_threshold REAL NOT NULL DEFAULT 0.5,
+			vad_min_silence_ms INTEGER NOT NULL DEFAULT 500,
+			vad_padding_ms INTEGER NOT NULL DEFAULT 400,
+			hallucination_filter TEXT NOT NULL DEFAULT 'medium',
+			condition_on_previous_text INTEGER NOT NULL DEFAULT 0,
+			no_speech_threshold REAL NOT NULL DEFAULT 0.6,
+			compression_ratio_threshold REAL NOT NULL DEFAULT 2.4
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -237,6 +275,20 @@ func (s *Store) migrate() error {
 		"glossary_json":      "TEXT NOT NULL DEFAULT '{}'",
 		"local_models_json":  "TEXT NOT NULL DEFAULT '{}'",
 		"hugging_face_token": "TEXT NOT NULL DEFAULT ''",
+		// 降噪相关列（后续阶段加入）。
+		"noise_reduction":             "TEXT NOT NULL DEFAULT 'off'",
+		"noise_reduction_filter":      "TEXT NOT NULL DEFAULT ''",
+		"noise_reduction_sample_rate": "INTEGER NOT NULL DEFAULT 0",
+		// 识别准确性相关列（后续阶段加入）。
+		"beam_size":                   "INTEGER NOT NULL DEFAULT 5",
+		"vad_filter":                  "INTEGER NOT NULL DEFAULT 1",
+		"vad_threshold":               "REAL NOT NULL DEFAULT 0.5",
+		"vad_min_silence_ms":          "INTEGER NOT NULL DEFAULT 500",
+		"vad_padding_ms":              "INTEGER NOT NULL DEFAULT 400",
+		"hallucination_filter":        "TEXT NOT NULL DEFAULT 'medium'",
+		"condition_on_previous_text":  "INTEGER NOT NULL DEFAULT 0",
+		"no_speech_threshold":         "REAL NOT NULL DEFAULT 0.6",
+		"compression_ratio_threshold": "REAL NOT NULL DEFAULT 2.4",
 	}
 	existingSettings, err := s.tableColumns("settings")
 	if err != nil {

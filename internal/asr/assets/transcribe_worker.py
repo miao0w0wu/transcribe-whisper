@@ -82,6 +82,53 @@ def normalize_type(value):
     return text
 
 
+def positive_float(value, default):
+    """取正浮点数；缺失、非法或非正时回落到默认值。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number <= 0:
+        return default
+    return number
+
+
+def positive_int(value, default):
+    """取正整数值；缺失、非法或非正时回落到默认值。"""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    if number <= 0:
+        return default
+    return number
+
+
+def optional_bool(value, default):
+    """取布尔值；None 表示调用方未设置，回落到默认值。"""
+    if value is None:
+        return default
+    return bool(value)
+
+
+def build_vad_parameters(request):
+    """组装 faster-whisper 的 vad_parameters。
+
+    Go 侧只传非零值，未设置的键直接不出现，由 faster-whisper 用自己的默认值。
+    """
+    params = {}
+    threshold = positive_float(request.get("vad_threshold"), 0)
+    if threshold > 0:
+        params["threshold"] = max(0.01, min(0.99, threshold))
+    min_silence = positive_int(request.get("vad_min_silence_ms"), 0)
+    if min_silence > 0:
+        params["min_silence_duration_ms"] = min_silence
+    padding = positive_int(request.get("vad_padding_ms"), 0)
+    if padding > 0:
+        params["speech_pad_ms"] = padding
+    return params or None
+
+
 def resolve_model_path(request):
     """优先使用本地模型目录，其次带缓存目录使用模型名。"""
     model_path = (request.get("model_path") or "").strip()
@@ -187,6 +234,16 @@ def transcribe(request):
     vad_filter = bool(request.get("vad_filter"))
     initial_prompt = (request.get("initial_prompt") or "").strip() or None
 
+    # 以下参数用于提高识别准确性；None 表示调用方未设置，交给 faster-whisper 默认。
+    vad_parameters = build_vad_parameters(request) if vad_filter else None
+    condition_on_previous_text = optional_bool(
+        request.get("condition_on_previous_text"), True
+    )
+    no_speech_threshold = positive_float(request.get("no_speech_threshold"), 0) or None
+    compression_ratio_threshold = (
+        positive_float(request.get("compression_ratio_threshold"), 0) or None
+    )
+
     emit({"type": "progress", "ratio": 0, "message": "开始识别"})
     duration = media_duration(audio_path)
     on_progress = make_progress_callback(duration)
@@ -196,7 +253,14 @@ def transcribe(request):
         "vad_filter": vad_filter,
         "language": language,
         "initial_prompt": initial_prompt,
+        "condition_on_previous_text": condition_on_previous_text,
     }
+    if vad_parameters:
+        kwargs["vad_parameters"] = vad_parameters
+    if no_speech_threshold is not None:
+        kwargs["no_speech_threshold"] = no_speech_threshold
+    if compression_ratio_threshold is not None:
+        kwargs["compression_ratio_threshold"] = compression_ratio_threshold
 
     try:
         segments, info = model.transcribe(audio_path, **kwargs)

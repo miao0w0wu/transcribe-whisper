@@ -152,6 +152,21 @@ type requestPayload struct {
 	VadFilter     bool   `json:"vad_filter"`
 	InitialPrompt string `json:"initial_prompt"`
 	DownloadRoot  string `json:"download_root"`
+
+	// 以下是提高识别准确性的可调参数。
+	//
+	// 除 ConditionOnPreviousText 外都带 omitempty：零值不出现在 JSON 里，
+	// 脚本侧用 request.get(key) 为 None 来区分「未设置」与「显式设为 0」，
+	// 从而正确套用自己的默认值。
+	//
+	// ConditionOnPreviousText 必须始终发送：本应用把它默认关掉以减少重复幻觉，
+	// 若用 omitempty，false 会被吞掉，脚本就会回落到 faster-whisper 的 True 默认。
+	VadThreshold              float64 `json:"vad_threshold,omitempty"`
+	VadMinSilenceMs           int     `json:"vad_min_silence_ms,omitempty"`
+	VadPaddingMs              int     `json:"vad_padding_ms,omitempty"`
+	ConditionOnPreviousText   bool    `json:"condition_on_previous_text"`
+	NoSpeechThreshold         float64 `json:"no_speech_threshold,omitempty"`
+	CompressionRatioThreshold float64 `json:"compression_ratio_threshold,omitempty"`
 }
 
 // buildPayload 把 Request 转成脚本入参，并把 auto 之类的占位值规范化。
@@ -192,7 +207,50 @@ func buildPayload(req Request, defaultModel string) requestPayload {
 		VadFilter:     req.VadFilter,
 		InitialPrompt: req.InitialPrompt,
 		DownloadRoot:  downloadRoot,
+
+		VadThreshold:              clampUnitFloat(req.VadThreshold),
+		VadMinSilenceMs:           clampIntRange(req.VadMinSilenceMs, 0, 2000),
+		VadPaddingMs:              clampIntRange(req.VadPaddingMs, 0, 5000),
+		ConditionOnPreviousText:   req.ConditionOnPreviousText,
+		NoSpeechThreshold:         clampUnitFloat(req.NoSpeechThreshold),
+		CompressionRatioThreshold: clampFloatRange(req.CompressionRatioThreshold, 0, 10),
 	}
+}
+
+// clampUnitFloat 把数值限制在 0..1；非正数表示「未设置」，返回 0。
+func clampUnitFloat(v float64) float64 {
+	return clampFloatRange(v, 0, 1)
+}
+
+// clampFloatRange 把数值限制在 [lo, hi]；输入非正数时按「未设置」返回 0。
+//
+// 之所以把「未设置」也映射到 0：脚本侧把 0 解释为「用自身默认值」，
+// 这样 Go 侧零值请求不会把阈值意外压到下限。
+func clampFloatRange(v, lo, hi float64) float64 {
+	if v <= 0 {
+		return 0
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// clampIntRange 把数值限制在 [lo, hi]；非正数表示「未设置」，返回 0。
+func clampIntRange(v, lo, hi int) int {
+	if v <= 0 {
+		return 0
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // workerEvent 是 Python 工作脚本输出的单行事件。

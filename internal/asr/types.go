@@ -46,6 +46,22 @@ type Request struct {
 	ScriptPath    string
 	// SegmentTimeout 是单次识别的超时时间（秒）。
 	SegmentTimeout int
+
+	// 以下参数用于提高识别准确性，零值表示「用脚本内默认值」。
+	//
+	// VadThreshold 是 VAD 判为语音的概率阈值，越高越严格。
+	VadThreshold float64
+	// VadMinSilenceMs 是最短静音间隔（毫秒），低于该值不切分。
+	VadMinSilenceMs int
+	// VadPaddingMs 是语音段前后留白（毫秒），避免切掉字头字尾。
+	VadPaddingMs int
+	// ConditionOnPreviousText 让每段解码参考上一段文本。关掉能显著减少
+	// 重复与幻觉，但可能损失一点上下文连贯性。
+	ConditionOnPreviousText bool
+	// NoSpeechThreshold 是判为「无语音」的阈值，越高越容易判定为静音。
+	NoSpeechThreshold float64
+	// CompressionRatioThreshold 是压缩比阈值，越高对重复文本越宽容。
+	CompressionRatioThreshold float64
 }
 
 // Engine 是 ASR 引擎接口。

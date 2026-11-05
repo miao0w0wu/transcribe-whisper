@@ -49,13 +49,25 @@ type database struct {
 	path  string
 }
 
-// NewApp 构造应用实例。
+// newApp 构造生产用的应用实例。
+//
+// 它不创建任何目录，也不把数据目录标记成临时目录：数据目录由 startup
+// 通过 resolveDataDir 决定（应用所在目录下的绿色版目录，或用户配置目录）。
+// main.go 必须用它，不能用测试构造 NewApp——后者会把数据目录指向系统
+// 临时目录，一旦被 shutdown 当作临时目录清理，真实配置会被整目录删除。
+func newApp() *App {
+	return &App{}
+}
+
+// NewApp 构造测试用的应用实例。
 //
 // 它只在测试里使用：数据目录指向系统临时目录，避免读取或写入用户的
 // 真实配置（模型目录、设置），保证测试之间以及测试与真实安装互不污染。
-// 真实应用走 startup，由 Wails 调用。
+// 真实应用走 newApp + startup，由 Wails 调用。
 func NewApp() *App {
-	app := &App{}
+	app := newApp()
+	// 先准备好临时数据目录，再打开数据库：openDatabase 会装配依赖，
+	// 需要按这个数据目录创建模型/工作目录。
 	if dir, err := os.MkdirTemp("", "transcribe-whisper-app-*"); err == nil {
 		app.dataDir = dir
 		app.tempDataDir = true
@@ -77,7 +89,13 @@ func (a *App) startup(ctx context.Context) {
 		log.Printf("无法创建应用数据目录: %v", err)
 		return
 	}
+	a.mu.Lock()
 	a.dataDir = dir
+	// 拿到的是真实数据目录，必须显式复位临时标记：即使调用方误用了测试
+	// 构造 NewApp（它会把 tempDataDir 置为 true），也不能让 shutdown 把
+	// 用户的整个配置文件夹删掉。
+	a.tempDataDir = false
+	a.mu.Unlock()
 	log.Printf("数据目录：%s", dir)
 
 	databasePath := filepath.Join(dir, "transcribe-whisper.db")
@@ -88,6 +106,10 @@ func (a *App) startup(ctx context.Context) {
 }
 
 // shutdown 关闭数据库与后台任务，并清理测试用的临时目录。
+//
+// 只有确认数据目录确实是系统临时目录时才删除：真实数据目录（应用旁的
+// 绿色版目录或用户配置目录）一律保留，否则用户关闭软件后会丢掉任务库、
+// 模型与 FFmpeg。
 func (a *App) shutdown(ctx context.Context) {
 	a.mu.Lock()
 	queue := a.queue
@@ -109,8 +131,16 @@ func (a *App) shutdown(ctx context.Context) {
 	tempDir := a.dataDir
 	isTemp := a.tempDataDir
 	a.mu.RUnlock()
-	if isTemp && tempDir != "" {
-		_ = os.RemoveAll(tempDir)
+	if !isTemp || tempDir == "" {
+		return
+	}
+	// 第三层防御：无论标记如何，只删系统临时目录下的路径。
+	if !shouldRemoveTempDataDir(tempDir) {
+		log.Printf("数据目录 %s 不在系统临时目录下，保留不删除", tempDir)
+		return
+	}
+	if err := os.RemoveAll(tempDir); err != nil {
+		log.Printf("清理临时数据目录 %s 失败: %v", tempDir, err)
 	}
 }
 
@@ -197,8 +227,11 @@ func (a *App) bootstrap(ctx context.Context) {
 	registerLocalModels(models, settings)
 
 	queue := service.NewQueue(service.Deps{
-		Store:      store,
-		Media:      selectedFFmpeg,
+		Store:  store,
+		Media:  selectedFFmpeg,
+		// 降噪增强复用同一个 FFmpeg 实例：能力探测结果已缓存，无需重复探测。
+		// 未配置 FFmpeg 时 Enhancer 为 nil，降噪阶段自动跳过。
+		Enhancer:   selectedFFmpeg,
 		Burner:     selectedFFmpeg,
 		Engine:     engine,
 		Engines:    newEngineSelector(models, fasterWhisper, transformersEngine),

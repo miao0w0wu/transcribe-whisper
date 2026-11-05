@@ -28,7 +28,12 @@ type Capabilities struct {
 	OK                    bool   `json:"ok"`
 	SupportsSubtitlesBurn bool   `json:"supportsSubtitlesBurn"`
 	SupportsDrawText      bool   `json:"supportsDrawText"`
-	Detail                string `json:"detail"`
+	// 以下能力位用于音频降噪：缺失时对应滤镜会被剔除，降级而不是整条失败。
+	SupportsDenoise    bool   `json:"supportsDenoise"`
+	SupportsDeesser    bool   `json:"supportsDeesser"`
+	SupportsLoudnorm   bool   `json:"supportsLoudnorm"`
+	SupportsCompressor bool   `json:"supportsCompressor"`
+	Detail             string `json:"detail"`
 }
 
 // ExtractRequest 是音频提取参数。
@@ -54,3 +59,5 @@ type BurnRequest struct {
 type Burner interface {
 	Burn(ctx context.Context, req BurnRequest) error
 }
+
+// EnhanceRequest、EnhanceResult、Enhancer 与降噪预设见 enhance_types.go。

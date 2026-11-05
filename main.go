@@ -12,8 +12,9 @@ import (
 var assets embed.FS
 
 func main() {
-	// Create an instance of the app structure
-	app := NewApp()
+	// 生产构造：数据目录由 startup 通过 resolveDataDir 决定。
+	// 不要用测试构造 NewApp——它把数据目录指向系统临时目录并标记为可清理。
+	app := newApp()
 
 	// Create application with options
 	err := wails.Run(&options.App{

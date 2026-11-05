@@ -1,3 +1,24 @@
+# 构建产物
 build/bin
-node_modules
+build/windows/installer/*.exe
 frontend/dist
+node_modules
+
+# 本地临时目录（构建/验证时的中间产物）
+.gotmp
+*.exe
+!build/bin/transcribe-whisper.exe
+
+# 编辑器与系统文件
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+# 本地数据目录（绿色版运行时产生）
+transcribe-whisper-data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

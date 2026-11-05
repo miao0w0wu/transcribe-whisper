@@ -169,8 +169,14 @@ func (f *FFmpeg) detectCapabilities(ctx context.Context) (Capabilities, error) {
 
 	filtersOut, filterErr := f.run(callCtx, "-hide_banner", "-filters")
 	if filterErr == nil {
-		caps.SupportsSubtitlesBurn = hasFilter(string(filtersOut), "subtitles")
-		caps.SupportsDrawText = hasFilter(string(filtersOut), "drawtext")
+		filters := string(filtersOut)
+		caps.SupportsSubtitlesBurn = hasFilter(filters, "subtitles")
+		caps.SupportsDrawText = hasFilter(filters, "drawtext")
+		// 音频降噪能力位：缺失的滤镜会在 Enhance 里被剔除并降级，而不是整条失败。
+		caps.SupportsDenoise = hasFilter(filters, "afftdn")
+		caps.SupportsDeesser = hasFilter(filters, "deesser")
+		caps.SupportsLoudnorm = hasFilter(filters, "loudnorm")
+		caps.SupportsCompressor = hasFilter(filters, "acompressor")
 	}
 
 	caps.OK = true
@@ -184,6 +190,17 @@ func (f *FFmpeg) detectCapabilities(ctx context.Context) (Capabilities, error) {
 	}
 	if !caps.SupportsDrawText {
 		caps.Detail = strings.TrimRight(caps.Detail, "。") + "；同时缺少 drawtext 滤镜"
+	}
+	// 降噪能力说明：仅在成功读到滤镜列表时才判断，否则会把「读不到」误报成「不支持」。
+	if filterErr == nil {
+		switch {
+		case !caps.SupportsDenoise:
+			caps.Detail = strings.TrimRight(caps.Detail, "。") +
+				"；缺少 afftdn 滤镜（需 FFmpeg 4.1+），降噪将自动降级为高通滤波与响度归一化"
+		case !caps.SupportsDeesser:
+			caps.Detail = strings.TrimRight(caps.Detail, "。") +
+				"；缺少 deesser 滤镜（需 FFmpeg 4.2+），强力降噪将不包含齿音抑制"
+		}
 	}
 	if build != "" {
 		caps.Detail += "（" + build + "）"

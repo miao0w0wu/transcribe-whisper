@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"transcribe-whisper/internal/asr"
 	"transcribe-whisper/internal/media"
 	"transcribe-whisper/internal/repository"
+	"transcribe-whisper/internal/subtitleclean"
 	"transcribe-whisper/internal/translation"
 )
 
@@ -58,6 +60,15 @@ func (q *Queue) execute(tc *taskContext) {
 			_ = os.Remove(audioPath)
 		}
 	}()
+
+	// 阶段二点五：降噪增强。失败时降级用原始音频继续，不让整条任务失败。
+	enhancedPath, cleanupEnhanced := q.enhanceAudio(tc, rec, settings, audioPath)
+	if cleanupEnhanced != nil {
+		defer cleanupEnhanced()
+	}
+	if enhancedPath != "" {
+		audioPath = enhancedPath
+	}
 
 	// 阶段三：语音识别。
 	segments, lang, err := q.transcribeStage(tc, rec, settings, audioPath)
@@ -111,6 +122,95 @@ func (q *Queue) execute(tc *taskContext) {
 
 // StageTranslated 是「识别完成但翻译未完成」的阶段标识。
 const StageTranslated = "translated-partial"
+
+// enhanceAudio 执行降噪增强，返回增强后的音频路径。
+//
+// 返回值语义：
+//   - 返回空串且 cleanup 为 nil：降噪关闭或本机无可用滤镜，调用方继续用原始音频；
+//   - 返回非空路径：调用方改用该文件，并在任务结束时调用 cleanup 清理；
+//   - 降噪失败不返回错误：降噪是「锦上添花」，失败应降级为用原始音频继续识别，
+//     而不是让整条任务失败（用户至少还能拿到一份字幕）。
+func (q *Queue) enhanceAudio(tc *taskContext, rec *repository.TaskRecord, settings repository.SettingsRecord, audioPath string) (string, func()) {
+	preset := strings.TrimSpace(settings.NoiseReduction)
+	if preset == "" || strings.EqualFold(preset, media.PresetOff) {
+		return "", nil
+	}
+	if q.deps.Enhancer == nil {
+		log.Printf("任务 %s：降噪已开启（%s），但当前没有可用的音频增强器，跳过降噪", rec.ID, preset)
+		return "", nil
+	}
+
+	dir := filepath.Dir(audioPath)
+	output := filepath.Join(dir, "audio-enhanced.wav")
+	sampleRate := settings.NoiseReductionSampleRate
+	if sampleRate <= 0 {
+		sampleRate = 16000
+	}
+
+	_ = q.updateStatus(tc.ctx, rec.ID, repository.TaskStatusExtracting, StageEnhancing,
+		"正在降噪", progressEnhanceStart,
+		fmt.Sprintf("正在消除背景杂音（%s）", noiseReductionLabel(preset)), "")
+
+	result, err := q.deps.Enhancer.Enhance(tc.ctx, media.EnhanceRequest{
+		InputPath:   audioPath,
+		OutputPath:  output,
+		Preset:      preset,
+		FilterChain: settings.NoiseReductionFilter,
+		SampleRate:  sampleRate,
+		Channels:    1,
+	})
+	if err != nil {
+		// 取消/暂停要如实上报，不能吞掉。
+		if aborted := tc.check(); aborted != nil {
+			return "", nil
+		}
+		log.Printf("任务 %s：降噪失败，改用原始音频继续识别：%v", rec.ID, err)
+		_ = q.updateStatus(tc.ctx, rec.ID, repository.TaskStatusExtracting, StageExtracting,
+			"降噪失败，改用原始音频", progressEnhanceEnd,
+			"降噪失败，已改用原始音频继续识别", "")
+		return "", nil
+	}
+
+	// Filter 为空表示没有任何滤镜生效（预设为 off，或本机 FFmpeg 缺少全部滤镜）。
+	if strings.TrimSpace(result.Filter) == "" {
+		log.Printf("任务 %s：降噪预设 %s 未产生可用滤镜，跳过降噪", rec.ID, preset)
+		return "", nil
+	}
+	if info, statErr := os.Stat(output); statErr != nil || info.Size() == 0 {
+		log.Printf("任务 %s：降噪输出无效，改用原始音频：%v", rec.ID, statErr)
+		return "", nil
+	}
+
+	message := fmt.Sprintf("降噪完成（%s）", noiseReductionLabel(preset))
+	if len(result.Skipped) > 0 {
+		message += fmt.Sprintf("；本机 FFmpeg 不支持 %d 个滤镜，已自动降级", len(result.Skipped))
+	}
+	_ = q.updateStatus(tc.ctx, rec.ID, repository.TaskStatusExtracting, StageEnhancing,
+		"降噪完成", progressEnhanceEnd, message, "")
+
+	cleanup := func() {
+		if output != "" {
+			_ = os.Remove(output)
+		}
+	}
+	return output, cleanup
+}
+
+// noiseReductionLabel 把降噪预设名转成中文标签，用于进度提示。
+func noiseReductionLabel(preset string) string {
+	switch strings.ToLower(strings.TrimSpace(preset)) {
+	case media.PresetLight:
+		return "轻度"
+	case media.PresetStandard:
+		return "标准"
+	case media.PresetStrong:
+		return "强力"
+	case media.PresetCustom:
+		return "自定义"
+	default:
+		return "关闭"
+	}
+}
 
 // probe 读取媒体元数据，失败时返回零值但不上报致命错误。
 func (q *Queue) probe(ctx context.Context, sourceFile string) (media.Info, error) {
@@ -229,8 +329,15 @@ func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, set
 		Language:     language,
 		Device:       settings.AsrDevice,
 		ComputeType:  settings.ComputeType,
-		BeamSize:     5,
-		VadFilter:    true,
+		BeamSize:     resolveBeamSize(settings.BeamSize),
+		VadFilter:    settings.VadFilter,
+		// 以下参数提高识别准确性；设置层把零值视为「未设置」，这里回落默认值。
+		VadThreshold:              resolveFloat(settings.VadThreshold, 0.5),
+		VadMinSilenceMs:           resolveInt(settings.VadMinSilenceMs, 500),
+		VadPaddingMs:              resolveInt(settings.VadPaddingMs, 400),
+		ConditionOnPreviousText:   settings.ConditionOnPreviousText,
+		NoSpeechThreshold:         resolveFloat(settings.NoSpeechThreshold, 0.6),
+		CompressionRatioThreshold: resolveFloat(settings.CompressionRatioThreshold, 2.4),
 	}
 
 	progressFn := func(ratio float64, message string) {
@@ -254,6 +361,18 @@ func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, set
 		return nil, "", fmt.Errorf("语音识别失败: %w", err)
 	}
 
+	// 清洗幻觉字幕：识别结果落库前先按设置的严格程度过滤一遍。
+	if result != nil && len(result.Segments) > 0 {
+		cleaned := subtitleclean.Clean(result.Segments, subtitleclean.Options{
+			Level: subtitleclean.Level(settings.HallucinationFilter),
+		})
+		if cleaned.Dropped > 0 {
+			log.Printf("任务 %s：过滤掉 %d 条疑似幻觉字幕（等级：%s）",
+				rec.ID, cleaned.Dropped, settings.HallucinationFilter)
+		}
+		result.Segments = cleaned.Segments
+	}
+
 	segments := toASRSegments(rec.ID, result)
 	if err := q.deps.Store.ReplaceSegments(context.WithoutCancel(tc.ctx), rec.ID, segments); err != nil {
 		return nil, "", fmt.Errorf("保存识别结果失败: %w", err)
@@ -262,6 +381,36 @@ func (q *Queue) transcribeStage(tc *taskContext, rec *repository.TaskRecord, set
 		return nil, "", fmt.Errorf("更新任务统计失败: %w", err)
 	}
 	return segments, result.Language, nil
+}
+
+// resolveBeamSize 返回可用的 beam_size。
+//
+// 设置层把 0 视为「未设置」（保持零值往返），所以默认值在这里补：
+// 低于 1 用 5，高于 10 用 10，避免用户填了离谱数字让识别慢到不可用。
+func resolveBeamSize(value int) int {
+	if value < 1 {
+		return 5
+	}
+	if value > 10 {
+		return 10
+	}
+	return value
+}
+
+// resolveFloat 在值为零（未设置）时返回默认值。
+func resolveFloat(value, fallback float64) float64 {
+	if value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+// resolveInt 在值为零（未设置）时返回默认值。
+func resolveInt(value, fallback int) int {
+	if value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 // translateStage 批量翻译任务里 pending 的字幕，返回已翻译条目数。
