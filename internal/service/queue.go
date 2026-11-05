@@ -97,6 +97,36 @@ func NewQueue(deps Deps) *Queue {
 	}
 }
 
+// SetMedia 替换媒体依赖（提取器与压制器）。
+//
+// 用在用户在运行时改了 FFmpeg 路径的场景：队列装配时持有的是旧引用，
+// 不同步的话新建任务仍会用旧的（或 nil）实现。传 nil 表示「当前不可用」，
+// 此时相关阶段会返回明确的中文错误而不是 panic。
+func (q *Queue) SetMedia(ffmpeg *media.FFmpeg) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if ffmpeg == nil {
+		q.deps.Media = nil
+		q.deps.Burner = nil
+		return
+	}
+	q.deps.Media = ffmpeg
+	q.deps.Burner = ffmpeg
+}
+
+// MediaReady 报告当前是否配置了可用的媒体依赖。
+func (q *Queue) MediaReady() bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.deps.Media != nil
+}
+
 // Close 取消所有正在执行的任务，并等待它们退出。
 func (q *Queue) Close() {
 	q.mu.Lock()

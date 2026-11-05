@@ -4,13 +4,14 @@
 // 在 useEffect 的清理函数里调用即可；非 Wails 环境下返回空取消函数，不会抛错。
 import { EventsOn } from '../../wailsjs/runtime/runtime';
 import { isWailsRuntime } from './runtime';
-import type { ModelProgressEvent, TaskProgressEvent } from './types';
+import type { FFmpegProgressEvent, ModelProgressEvent, TaskProgressEvent } from './types';
 
 type Unsubscribe = () => void;
 
 /** 事件名常量，和后端 EventsEmit 使用的一致 */
 export const EVENT_TASK_PROGRESS = 'task:progress';
 export const EVENT_MODEL_PROGRESS = 'model:progress';
+export const EVENT_FFMPEG_PROGRESS = 'ffmpeg:progress';
 
 /** 安全地读取事件载荷中的字符串字段 */
 function pickString(source: Record<string, unknown>, key: string): string {
@@ -67,6 +68,17 @@ function normalizeModelProgress(payload: unknown): ModelProgressEvent {
   };
 }
 
+function normalizeFFmpegProgress(payload: unknown): FFmpegProgressEvent {
+  const record = asRecord(payload);
+  return {
+    progress: pickNumber(record, 'progress'),
+    message: pickString(record, 'message'),
+    done: pickBoolean(record, 'done'),
+    error: pickString(record, 'error'),
+    path: pickString(record, 'path'),
+  };
+}
+
 /** 订阅任务进度事件，返回取消订阅函数 */
 export function subscribeTaskProgress(handler: (event: TaskProgressEvent) => void): Unsubscribe {
   if (!isWailsRuntime()) return () => undefined;
@@ -86,6 +98,19 @@ export function subscribeModelProgress(handler: (event: ModelProgressEvent) => v
   try {
     const off = EventsOn(EVENT_MODEL_PROGRESS, (payload: unknown) => {
       handler(normalizeModelProgress(payload));
+    });
+    return typeof off === 'function' ? off : () => undefined;
+  } catch {
+    return () => undefined;
+  }
+}
+
+/** 订阅 FFmpeg 下载进度事件，返回取消订阅函数 */
+export function subscribeFFmpegProgress(handler: (event: FFmpegProgressEvent) => void): Unsubscribe {
+  if (!isWailsRuntime()) return () => undefined;
+  try {
+    const off = EventsOn(EVENT_FFMPEG_PROGRESS, (payload: unknown) => {
+      handler(normalizeFFmpegProgress(payload));
     });
     return typeof off === 'function' ? off : () => undefined;
   } catch {

@@ -4,6 +4,7 @@ import * as api from '../lib/api';
 import type { ModelInfo, OllamaModelInfo, SettingsPatch, SettingsSnapshot } from '../lib/types';
 import { ASR_DEVICES, ASR_ENGINES, COMPUTE_TYPES, TRANSLATION_PROVIDERS, TRANSLATION_STYLES } from '../lib/types';
 import { DemoNotice, ErrorBar, FormField, LoadingState, NoticeBar } from './components/primitives';
+import { FFmpegPanel } from './settings/FFmpegPanel';
 
 export interface SettingsViewProps {
   demo: boolean;
@@ -513,16 +514,24 @@ export function SettingsView({ demo }: SettingsViewProps) {
         </div>
 
         <div className="settings-section">
+          <h3>FFmpeg</h3>
+          <p className="settings-note">
+            应用不再自动搜索系统里的 FFmpeg，需要你明确指定一个。可以一键下载完整版（带 libass，支持字幕压制），
+            也可以选择本机已有的 ffmpeg.exe。
+          </p>
+          <FFmpegPanel
+            demo={demo}
+            onChanged={(path) => {
+              // 下载/选择完成后同步到表单，避免「已启用但输入框还是空的」。
+              patchForm({ ffmpegPath: path });
+              void load();
+            }}
+          />
+        </div>
+
+        <div className="settings-section">
           <h3>运行环境与模型目录</h3>
           <div className="form-grid">
-            <FormField label="FFmpeg 路径" hint="留空则在系统 PATH 中查找">
-              <input
-                className="text-input"
-                value={form.ffmpegPath}
-                placeholder="C:\\ffmpeg\\bin\\ffmpeg.exe"
-                onChange={(event) => patchForm({ ffmpegPath: event.target.value })}
-              />
-            </FormField>
             <FormField label="Python 路径" hint="faster-whisper 所需的 Python 解释器">
               <input
                 className="text-input"
@@ -531,11 +540,11 @@ export function SettingsView({ demo }: SettingsViewProps) {
                 onChange={(event) => patchForm({ pythonPath: event.target.value })}
               />
             </FormField>
-            <FormField label="模型目录" hint="下载的模型缓存位置">
+            <FormField label="模型目录" hint="下载的模型缓存位置；默认为应用目录下的 models">
               <input
                 className="text-input"
                 value={form.modelDir}
-                placeholder="D:\\AI\\Models"
+                placeholder="（默认）应用目录下的 models"
                 onChange={(event) => patchForm({ modelDir: event.target.value })}
               />
             </FormField>

@@ -41,9 +41,6 @@ type App struct {
 	settings repository.SettingsRecord
 	// tempDataDir 表示数据目录是测试临时目录，shutdown 时要清理。
 	tempDataDir bool
-	// deepUpgradeEnabled 表示允许在装配时做磁盘深度扫描升级 FFmpeg。
-	// 只有真实应用启动（startup）开启；测试与 e2e 关闭，避免拖慢启动。
-	deepUpgradeEnabled bool
 }
 
 // database 包装连接句柄，保留旧版本 openDatabase 语义以便测试。
@@ -70,20 +67,20 @@ func NewApp() *App {
 }
 
 // startup 由 Wails 调用，负责打开真实数据库并装配依赖。
+//
+// 数据目录优先级：应用所在目录下的 transcribe-whisper-data（绿色版）>
+// 用户配置目录（应用目录不可写时的回退）。
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.deepUpgradeEnabled = true
-	configDir, err := os.UserConfigDir()
+	dir, err := resolveDataDir()
 	if err != nil {
-		log.Printf("无法定位应用配置目录: %v", err)
-		return
-	}
-	a.dataDir = filepath.Join(configDir, "transcribe-whisper")
-	if err := os.MkdirAll(a.dataDir, 0o700); err != nil {
 		log.Printf("无法创建应用数据目录: %v", err)
 		return
 	}
-	databasePath := filepath.Join(a.dataDir, "transcribe-whisper.db")
+	a.dataDir = dir
+	log.Printf("数据目录：%s", dir)
+
+	databasePath := filepath.Join(dir, "transcribe-whisper.db")
 	if err := a.openDatabase(databasePath); err != nil {
 		log.Printf("无法打开任务数据库: %v", err)
 		return
@@ -148,8 +145,8 @@ func (a *App) bootstrap(ctx context.Context) {
 	existingQueue := a.queue
 	a.mu.RUnlock()
 	if dataDir == "" {
-		if dir, err := os.UserConfigDir(); err == nil {
-			dataDir = filepath.Join(dir, "transcribe-whisper")
+		if dir, err := resolveDataDir(); err == nil {
+			dataDir = dir
 		}
 	}
 
@@ -159,31 +156,25 @@ func (a *App) bootstrap(ctx context.Context) {
 		settings = service.SettingsDefaults("")
 	}
 
+	// 模型目录默认放在数据目录下（应用目录旁的绿色版结构）。
 	modelDir := strings.TrimSpace(settings.ModelDir)
 	if modelDir == "" {
-		modelDir = filepath.Join(dataDir, "models")
+		modelDir = defaultModelDir(dataDir)
 		settings.ModelDir = modelDir
 	}
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		log.Printf("创建模型目录 %s 失败: %v", modelDir, err)
+	}
 
-	// FFmpeg 选择：用户显式指定的路径最优先；未指定时自动在 PATH 与常见
-	// 安装位置里挑能力最强的构建（字幕压制需要 subtitles 滤镜，很多精简
-	// 构建没有编译 libass，会导致压制功能不可用）。quick 选择拿不到压制
-	// 能力、且允许深度扫描时，再限深扫一次磁盘，把便携工具包自带的完整
-	// 构建找出来（真实启动才开启，测试与 e2e 不被拖慢）。
-	selectedFFmpeg := selectFFmpeg(ctx, settings.FFmpegPath)
-	if selectedFFmpeg != nil && a.deepUpgradeEnabled {
-		if upgraded := upgradeBurnCapability(ctx, selectedFFmpeg, &settings); upgraded != nil {
-			selectedFFmpeg = upgraded
-			_ = store.SaveSettings(ctx, settings)
-		}
-	}
+	// FFmpeg 完全由用户手动指定，不做任何自动发现。
+	// 未配置时 selectedFFmpeg 为 nil，界面据此提示「未安装」并给出下载入口。
+	selectedFFmpeg := resolveFFmpeg(ctx, settings.FFmpegPath)
 	if selectedFFmpeg == nil {
-		log.Printf("未找到可用的 FFmpeg，媒体相关功能将不可用；可在设置中手动指定路径")
-	}
-	if selectedFFmpeg != nil && strings.TrimSpace(settings.FFmpegPath) == "" {
-		// 自动发现的结果写回设置，让设置页展示实际使用的路径；
-		// 用户手动配置过的路径不动。
-		settings.FFmpegPath = selectedFFmpeg.Path()
+		if strings.TrimSpace(settings.FFmpegPath) == "" {
+			log.Printf("尚未配置 FFmpeg；请先下载或选择 ffmpeg.exe（默认安装目录：%s）", defaultFFmpegDir(dataDir))
+		} else {
+			log.Printf("配置的 FFmpeg 不可用：%s", settings.FFmpegPath)
+		}
 	}
 
 	// 两个识别引擎：faster-whisper 加载 CTranslate2 模型，transformers 加载

@@ -298,6 +298,20 @@ export function ModelsView({ demo, modelEvent }: ModelsViewProps) {
       <ErrorBar message={error} onDismiss={() => setError('')} />
       {hint ? <NoticeBar tone="success">{hint}</NoticeBar> : null}
 
+      {/* FFmpeg 未安装是硬阻塞：音频提取与识别都跑不了 */}
+      {environment && !environment.ffmpegOk ? (
+        <NoticeBar tone="warning">
+          尚未安装 FFmpeg，音频提取与语音识别都无法进行。请到「设置 → FFmpeg」下载完整版（带 libass，可压制字幕），
+          或选择本机已有的 ffmpeg.exe。
+          {environment.ffmpegDefaultDir ? (
+            <>
+              <br />
+              默认安装位置：<code>{environment.ffmpegDefaultDir}</code>
+            </>
+          ) : null}
+        </NoticeBar>
+      ) : null}
+
       {/* 自选本地模型 / 按链接添加 */}
       {addingLocal ? (
         <div className="add-model card">

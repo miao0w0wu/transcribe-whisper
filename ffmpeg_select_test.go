@@ -6,167 +6,99 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"transcribe-whisper/internal/repository"
+	"transcribe-whisper/internal/media"
 )
 
-// 本机已知有两套 FFmpeg：WhisperJAV 的精简构建（无 subtitles）和
-// jasna 工具包里的 gyan full 构建（有 subtitles）。自动发现必须选中后者。
-func TestSelectFFmpegPrefersSubtitlesCapableBuild(t *testing.T) {
-	selected := selectFFmpeg(context.Background(), "")
-	if selected == nil {
-		t.Skip("本机没有探测到任何可用 FFmpeg，跳过")
+// 应用已改为「FFmpeg 完全手动指定」，本文件验证新的行为契约：
+//   - 未配置时明确判定为未安装（不再自动发现）；
+//   - 配置了可用路径时正常识别能力；
+//   - 配置了错误路径时如实报告，不静默降级。
+
+func TestResolveFFmpegUnconfiguredReturnsNil(t *testing.T) {
+	// 关键契约：不配置就是 nil，绝不偷偷从 PATH 里找一个。
+	for _, configured := range []string{"", "   "} {
+		if got := resolveFFmpeg(context.Background(), configured); got != nil {
+			t.Fatalf("未配置时应返回 nil，实际 %v", got)
+		}
 	}
-	caps := selected.Available(context.Background())
+}
+
+func TestResolveFFmpegInvalidPathReturnsNil(t *testing.T) {
+	bogus := filepath.Join(t.TempDir(), "not-exist", "ffmpeg.exe")
+	if got := resolveFFmpeg(context.Background(), bogus); got != nil {
+		t.Fatalf("不存在的路径应返回 nil，实际 %v", got)
+	}
+}
+
+func TestResolveFFmpegUsesConfiguredPath(t *testing.T) {
+	ffmpegPath := strings.TrimSpace(os.Getenv("TRANSCRIBE_TEST_FFMPEG"))
+	if ffmpegPath == "" {
+		t.Skip("未设置 TRANSCRIBE_TEST_FFMPEG，跳过需要真实 FFmpeg 的用例")
+	}
+	got := resolveFFmpeg(context.Background(), ffmpegPath)
+	if got == nil {
+		t.Fatalf("配置的 FFmpeg 应可用：%s", ffmpegPath)
+	}
+	caps := got.Available(context.Background())
 	if !caps.OK {
-		t.Fatalf("选中的构建应可用: %+v", caps)
+		t.Fatalf("FFmpeg 无法执行：%s", caps.Detail)
 	}
-	if !caps.SupportsSubtitlesBurn {
-		// quick 只覆盖 PATH 与常见目录；此时深度扫描必须能救回来。
-		upgraded := deepScanFFmpeg(context.Background(), caps.Path)
-		if upgraded == nil {
-			t.Fatalf("quick 与深度扫描都没找到支持压制的构建（quick 选中 %s）", caps.Path)
-		}
-		ucaps := upgraded.Available(context.Background())
-		if !ucaps.SupportsSubtitlesBurn {
-			t.Fatalf("深度扫描结果应支持压制: %+v", ucaps)
-		}
-		t.Logf("quick 选中的是精简构建，深度扫描升级为 %s", upgraded.Path())
+	if !strings.EqualFold(caps.Path, ffmpegPath) && !strings.Contains(strings.ToLower(caps.Path), "ffmpeg") {
+		t.Fatalf("返回路径异常：%s", caps.Path)
 	}
 }
 
-// 深度扫描有硬性时限，不能无限期占用启动时间。
-func TestDeepScanRespectsDeadline(t *testing.T) {
-	deadline := time.Now().Add(2 * time.Second)
-	candidates := deepScanCandidates(deadline)
-	if time.Since(deadline) > 1500*time.Millisecond {
-		t.Fatalf("扫描应在 deadline 附近收敛，实际超时 %v", time.Since(deadline))
+func TestInspectFFmpegUnconfigured(t *testing.T) {
+	status := inspectFFmpeg(context.Background(), "")
+	if status.Configured {
+		t.Fatal("未配置时 Configured 应为 false")
 	}
-	for _, c := range candidates {
-		if !strings.EqualFold(filepath.Base(c), "ffmpeg.exe") {
-			t.Fatalf("候选应都是 ffmpeg.exe: %s", c)
-		}
+	if status.OK {
+		t.Fatal("未配置时 OK 应为 false")
 	}
-	t.Logf("深度扫描发现 %d 个 ffmpeg.exe", len(candidates))
-}
-
-// 升级路径：当前构建无压制能力 + 未配置路径 → 扫描升级并回写设置。
-func TestUpgradeBurnCapabilityUpgradesAndPersists(t *testing.T) {
-	app := NewApp()
-	defer app.shutdown(context.Background())
-
-	settings := app.currentSettings()
-	settings.FFmpegPath = "" // 模拟用户未配置
-	upgraded := upgradeBurnCapability(context.Background(), app.media, &settings)
-	if upgraded == nil {
-		t.Skip("当前构建已支持压制或深度扫描无收获，无需升级")
-	}
-	if settings.FFmpegPath == "" {
-		t.Fatal("升级后应把新路径写回设置以便持久化")
-	}
-	caps := upgraded.Available(context.Background())
-	if !caps.SupportsSubtitlesBurn {
-		t.Fatalf("升级结果应支持压制: %+v", caps)
+	if !strings.Contains(status.Detail, "尚未指定") {
+		t.Fatalf("应给出中文提示，实际：%s", status.Detail)
 	}
 }
 
-// 用户显式配置过路径时，升级逻辑必须完全让位。
-func TestUpgradeBurnCapabilitySkipsWhenConfigured(t *testing.T) {
-	app := NewApp()
-	defer app.shutdown(context.Background())
-
-	weak := repository.SettingsRecord{FFmpegPath: `D:\somewhere\ffmpeg.exe`}
-	if upgraded := upgradeBurnCapability(context.Background(), app.media, &weak); upgraded != nil {
-		t.Fatalf("用户已配置路径时不应升级: %s", upgraded.Path())
+func TestInspectFFmpegInvalidPath(t *testing.T) {
+	bogus := filepath.Join(t.TempDir(), "ffmpeg.exe")
+	status := inspectFFmpeg(context.Background(), bogus)
+	if !status.Configured {
+		t.Fatal("填了路径就应视为已配置")
+	}
+	if status.OK {
+		t.Fatal("不可用的路径不应标记为可用")
+	}
+	if !strings.Contains(status.Detail, "不可用") {
+		t.Fatalf("应说明路径不可用，实际：%s", status.Detail)
 	}
 }
 
-// 用户显式配置的路径必须原样胜出，即使它能力较弱——这是用户的选择。
-func TestSelectFFmpegRespectsConfiguredPath(t *testing.T) {
-	// 用一个肯定存在的候选（PATH 上的 ffmpeg），验证配置优先于自动发现。
-	configured := ""
-	if matches, err := lookAllFFmpeg(); err == nil && matches != "" {
-		configured = matches
-	} else {
-		t.Skip("本机 PATH 上没有 ffmpeg，跳过")
+func TestInspectFFmpegReal(t *testing.T) {
+	ffmpegPath := strings.TrimSpace(os.Getenv("TRANSCRIBE_TEST_FFMPEG"))
+	if ffmpegPath == "" {
+		t.Skip("未设置 TRANSCRIBE_TEST_FFMPEG，跳过需要真实 FFmpeg 的用例")
 	}
-	selected := selectFFmpeg(context.Background(), configured)
-	if selected == nil {
-		t.Fatal("显式配置时应返回该路径的构建")
+	status := inspectFFmpeg(context.Background(), ffmpegPath)
+	if !status.Configured || !status.OK {
+		t.Fatalf("真实 FFmpeg 应可用：%+v", status)
 	}
-	if !strings.EqualFold(selected.Path(), configured) && !strings.EqualFold(filepath.Base(selected.Path()), filepath.Base(configured)) {
-		t.Fatalf("应使用用户配置的路径 %s，实际 %s", configured, selected.Path())
+	if status.Version == "" {
+		t.Log("该构建未报告版本号")
+	}
+	t.Logf("FFmpeg 状态：version=%s canBurn=%v detail=%s", status.Version, status.CanBurn, status.Detail)
+}
+
+func TestInspectFFmpegIsPureReadOnly(t *testing.T) {
+	// inspectFFmpeg 不该修改任何全局状态：连续调用结果应一致。
+	first := inspectFFmpeg(context.Background(), "")
+	second := inspectFFmpeg(context.Background(), "")
+	if first != second {
+		t.Fatalf("两次探测结果不一致：%+v vs %+v", first, second)
 	}
 }
 
-// 候选列表：显式配置时只有一条；自动发现时至少包含 PATH 上的 ffmpeg。
-func TestFFmpegCandidates(t *testing.T) {
-	explicit := ffmpegCandidates(`D:\custom\ffmpeg.exe`)
-	if len(explicit) != 1 || explicit[0] != `D:\custom\ffmpeg.exe` {
-		t.Fatalf("显式配置时只应有一条候选: %v", explicit)
-	}
-
-	auto := ffmpegCandidates("")
-	found := false
-	for _, c := range auto {
-		if strings.EqualFold(filepath.Base(c), "ffmpeg.exe") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("自动发现应包含 PATH 上的 ffmpeg: %v", auto)
-	}
-	// 去重：同一路径（大小写不同）不应重复。
-	seen := make(map[string]int)
-	for _, c := range auto {
-		seen[strings.ToLower(c)]++
-	}
-	for path, count := range seen {
-		if count > 1 {
-			t.Fatalf("候选列表应去重: %s 出现 %d 次", path, count)
-		}
-	}
-}
-
-// GetEnvironment 报告的路径应与装配时选中的构建一致，界面才不会显示错误信息。
-func TestGetEnvironmentReportsSelectedFFmpeg(t *testing.T) {
-	app := NewApp()
-	defer app.shutdown(context.Background())
-
-	status := app.GetEnvironment()
-	if app.media == nil {
-		if status.FFmpegOK {
-			t.Fatal("装配失败时不应报告 FFmpeg 可用")
-		}
-		return
-	}
-	if !status.FFmpegOK {
-		t.Fatalf("装配成功的构建应报告可用: %+v", status)
-	}
-	if !strings.EqualFold(status.FFmpegPath, app.media.Path()) {
-		t.Fatalf("环境报告的路径 %s 应与选中的 %s 一致", status.FFmpegPath, app.media.Path())
-	}
-	// 自动发现未配置时，选中的路径应回写进设置，设置页才能展示真实值。
-	if settings := app.currentSettings(); settings.FFmpegPath == "" {
-		t.Fatal("自动发现的 FFmpeg 路径应写回设置")
-	}
-}
-
-// 辅助：拿到 PATH 上第一个 ffmpeg（测试用）。
-func lookAllFFmpeg() (string, error) {
-	return lookPathFFmpeg()
-}
-
-func lookPathFFmpeg() (string, error) {
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if dir == "" {
-			continue
-		}
-		candidate := filepath.Join(dir, "ffmpeg.exe")
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-	return "", os.ErrNotExist
-}
+// 编译期确认 media 包仍被本文件引用（避免导入漂移）。
+var _ = media.ErrFFmpegNotFound

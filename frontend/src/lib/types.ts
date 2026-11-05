@@ -176,12 +176,57 @@ export interface BurnSubtitlesInput {
   marginV: number;
 }
 
+/** FFmpeg 下载源 */
+export interface FFmpegSource {
+  id: string;
+  label: string;
+  url: string;
+  note: string;
+  license: string;
+}
+
+/** FFmpeg 安装与可用性状态 */
+export interface FFmpegStatus {
+  /** 是否指定过路径；false 即「未安装」 */
+  configured: boolean;
+  path: string;
+  version: string;
+  ok: boolean;
+  /** 是否支持字幕压制（需带 libass 的完整版） */
+  canBurn: boolean;
+  detail: string;
+  /** 默认安装目录（应用数据目录下的 ffmpeg/） */
+  defaultDir: string;
+  dataDir: string;
+  downloading: boolean;
+  sources: FFmpegSource[];
+}
+
+/** FFmpeg 下载入参 */
+export interface DownloadFFmpegInput {
+  /** 安装目录，留空用默认目录 */
+  dir: string;
+  /** 指定下载源，留空按内置顺序自动降级 */
+  sourceId: string;
+}
+
+/** ffmpeg:progress 事件载荷 */
+export interface FFmpegProgressEvent {
+  progress: number;
+  message: string;
+  done: boolean;
+  error: string;
+  path: string;
+}
+
 /** 运行环境探测结果 */
 export interface EnvironmentStatus {
   ffmpegPath: string;
   ffmpegOk: boolean;
   ffmpegDetail: string;
   ffmpegSubtitle: boolean;
+  /** FFmpeg 默认安装目录，未安装时用来提示用户 */
+  ffmpegDefaultDir: string;
   pythonPath: string;
   pythonOk: boolean;
   pythonDetail: string;

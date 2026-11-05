@@ -13,30 +13,30 @@ import (
 	"transcribe-whisper/internal/media"
 )
 
-// TestRealBurnSubtitle 用本机发现的完整版 FFmpeg 实际压制一次字幕，
+// TestRealBurnSubtitle 用本机已安装的 FFmpeg 实际压制一次字幕，
 // 验证「缺少 subtitles 滤镜」问题的修复效果：
-//  1. 深度扫描能找到带 libass 的构建；
+//  1. 能通过配置的路径找到带 libass 的构建；
 //  2. Burn 能产出带字幕的画面；
 //  3. 产出视频时长与源一致。
 //
-// 需要本机存在完整版 FFmpeg（本机为 jasna 工具包内置的 gyan full 构建）；
-// 没有时跳过。测试生成的音视频都是合成的，不依赖外部素材。
+// 应用已改为「只用手动配置的 FFmpeg」，因此这里读环境变量
+// TRANSCRIBE_TEST_FFMPEG 指定的 ffmpeg.exe；未设置时跳过。
 func TestRealBurnSubtitle(t *testing.T) {
-	// 第一步：找到支持压制的构建。
-	selected := selectFFmpeg(context.Background(), "")
-	var burner *media.FFmpeg
-	if selected != nil {
-		if caps := selected.Available(context.Background()); caps.OK && caps.SupportsSubtitlesBurn {
-			burner = selected
-		}
+	configured := strings.TrimSpace(os.Getenv("TRANSCRIBE_TEST_FFMPEG"))
+	if configured == "" {
+		t.Skip("未设置 TRANSCRIBE_TEST_FFMPEG（指向完整版 ffmpeg.exe），跳过")
 	}
+	burner := resolveFFmpeg(context.Background(), configured)
 	if burner == nil {
-		burner = deepScanFFmpeg(context.Background(), "")
-	}
-	if burner == nil {
-		t.Skip("本机没有找到支持字幕压制的 FFmpeg 构建")
+		t.Fatalf("配置的 FFmpeg 不可用：%s", configured)
 	}
 	caps := burner.Available(context.Background())
+	if !caps.OK {
+		t.Fatalf("FFmpeg 无法执行：%s", caps.Detail)
+	}
+	if !caps.SupportsSubtitlesBurn {
+		t.Skip("该构建没有 subtitles 滤镜，无法压制字幕")
+	}
 	t.Logf("使用构建：%s（%s）", caps.Path, caps.Version)
 
 	workDir := t.TempDir()

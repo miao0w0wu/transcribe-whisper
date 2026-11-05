@@ -177,12 +177,60 @@ type OllamaModelInfo struct {
 	ModifiedAt    string `json:"modifiedAt"`
 }
 
+// FFmpegSource 描述一个 FFmpeg 下载源。
+type FFmpegSource struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	URL     string `json:"url"`
+	Note    string `json:"note"`
+	License string `json:"license"`
+}
+
+// FFmpegStatus 是 FFmpeg 的安装与可用性状态。
+type FFmpegStatus struct {
+	// Configured 表示用户是否指定过路径；false 即「未安装」。
+	Configured bool   `json:"configured"`
+	Path       string `json:"path"`
+	Version    string `json:"version"`
+	OK         bool   `json:"ok"`
+	// CanBurn 表示支持字幕压制（需要带 libass 的完整版）。
+	CanBurn bool   `json:"canBurn"`
+	Detail  string `json:"detail"`
+	// DefaultDir 是默认安装目录（应用数据目录下的 ffmpeg/）。
+	DefaultDir string `json:"defaultDir"`
+	// DataDir 是应用数据目录，界面用来展示文件实际存放位置。
+	DataDir     string `json:"dataDir"`
+	Downloading bool   `json:"downloading"`
+	// Sources 是可选的下载源。
+	Sources []FFmpegSource `json:"sources"`
+}
+
+// DownloadFFmpegInput 是 FFmpeg 下载入参。
+type DownloadFFmpegInput struct {
+	// Dir 是安装目录，留空用默认目录（应用数据目录下的 ffmpeg/）。
+	Dir string `json:"dir"`
+	// SourceID 指定下载源，留空按内置顺序自动降级。
+	SourceID string `json:"sourceId"`
+}
+
+// FFmpegProgressPayload 是 ffmpeg:progress 事件载荷。
+type FFmpegProgressPayload struct {
+	Progress int    `json:"progress"`
+	Message  string `json:"message"`
+	Done     bool   `json:"done"`
+	Error    string `json:"error"`
+	// Path 是安装完成后的 ffmpeg.exe 路径（仅 Done 且无 Error 时有效）。
+	Path string `json:"path"`
+}
+
 // EnvironmentStatus 汇总运行环境探测结果。
 type EnvironmentStatus struct {
 	FFmpegPath     string `json:"ffmpegPath"`
 	FFmpegOK       bool   `json:"ffmpegOk"`
 	FFmpegDetail   string `json:"ffmpegDetail"`
 	FfmpegSubtitle bool   `json:"ffmpegSubtitle"`
+	// FFmpegDefaultDir 是 FFmpeg 的默认安装目录，未安装时界面用它提示用户。
+	FFmpegDefaultDir string `json:"ffmpegDefaultDir"`
 	PythonPath     string `json:"pythonPath"`
 	PythonOK       bool   `json:"pythonOk"`
 	PythonDetail   string `json:"pythonDetail"`

@@ -22,12 +22,20 @@ export function CancelTask(arg1) {
   return window['go']['main']['App']['CancelTask'](arg1);
 }
 
+export function ClearFFmpegPath() {
+  return window['go']['main']['App']['ClearFFmpegPath']();
+}
+
 export function CreateTask(arg1) {
   return window['go']['main']['App']['CreateTask'](arg1);
 }
 
 export function DeleteTask(arg1) {
   return window['go']['main']['App']['DeleteTask'](arg1);
+}
+
+export function DownloadFFmpeg(arg1) {
+  return window['go']['main']['App']['DownloadFFmpeg'](arg1);
 }
 
 export function DownloadModel(arg1) {
@@ -44,6 +52,10 @@ export function GetDashboard() {
 
 export function GetEnvironment() {
   return window['go']['main']['App']['GetEnvironment']();
+}
+
+export function GetFFmpegStatus() {
+  return window['go']['main']['App']['GetFFmpegStatus']();
 }
 
 export function GetSettings() {
@@ -74,6 +86,14 @@ export function PickDirectory() {
   return window['go']['main']['App']['PickDirectory']();
 }
 
+export function PickFFmpegDirectory() {
+  return window['go']['main']['App']['PickFFmpegDirectory']();
+}
+
+export function PickFFmpegFile() {
+  return window['go']['main']['App']['PickFFmpegFile']();
+}
+
 export function PickFile() {
   return window['go']['main']['App']['PickFile']();
 }
@@ -96,6 +116,10 @@ export function RetryTask(arg1) {
 
 export function SaveExport(arg1, arg2) {
   return window['go']['main']['App']['SaveExport'](arg1, arg2);
+}
+
+export function SetFFmpegPath(arg1) {
+  return window['go']['main']['App']['SetFFmpegPath'](arg1);
 }
 
 export function StartTask(arg1) {

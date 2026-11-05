@@ -36,6 +36,8 @@ export interface NewTaskProps {
   demo: boolean;
   onCreated: (taskId: string) => void;
   onCancel: () => void;
+  /** 跳到设置页（FFmpeg 未安装时引导用户去下载） */
+  onOpenSettings?: () => void;
 }
 
 interface FormState {
@@ -83,7 +85,7 @@ function validate(form: FormState, models: ModelInfo[]): string[] {
   return errors;
 }
 
-export function NewTask({ demo, onCreated, onCancel }: NewTaskProps) {
+export function NewTask({ demo, onCreated, onCancel, onOpenSettings }: NewTaskProps) {
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [environment, setEnvironment] = useState<EnvironmentStatus | null>(null);
@@ -402,7 +404,7 @@ export function NewTask({ demo, onCreated, onCancel }: NewTaskProps) {
           <div className="estimate">
             <div>
               <span>FFmpeg</span>
-              <strong className={environment.ffmpegOk ? '' : 'estimate-bad'}>{environment.ffmpegOk ? '已就绪' : '未检测到'}</strong>
+              <strong className={environment.ffmpegOk ? '' : 'estimate-bad'}>{environment.ffmpegOk ? '已就绪' : '未安装'}</strong>
             </div>
             <div>
               <span>faster-whisper</span>
@@ -421,6 +423,28 @@ export function NewTask({ demo, onCreated, onCancel }: NewTaskProps) {
               </strong>
             </div>
           </div>
+        ) : null}
+
+        {/* FFmpeg 是硬依赖：没它就提不了音频，直接在新建任务页拦住并给出入口 */}
+        {environment && !environment.ffmpegOk ? (
+          <NoticeBar tone="warning">
+            尚未安装 FFmpeg，无法提取音频，任务会失败。请先到「设置 → FFmpeg」下载完整版，
+            或选择本机已有的 ffmpeg.exe。
+            {environment.ffmpegDefaultDir ? (
+              <>
+                <br />
+                默认安装位置：<code>{environment.ffmpegDefaultDir}</code>
+              </>
+            ) : null}
+            {onOpenSettings ? (
+              <>
+                <br />
+                <button type="button" className="button secondary small" onClick={onOpenSettings}>
+                  前往设置
+                </button>
+              </>
+            ) : null}
+          </NoticeBar>
         ) : null}
 
         <div className="privacy-note">ⓘ 音视频与字幕全程在本机处理；翻译选择云端服务时，请先在「翻译设置」中确认云隐私开关。</div>

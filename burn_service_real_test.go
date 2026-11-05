@@ -19,17 +19,17 @@ import (
 // 与 TestRealBurnSubtitle 的区别：那条只测 media.Burn 本身，这条穿过
 // service.Queue.BurnSubtitles，覆盖字幕文本生成、输出路径校验与依赖装配。
 func TestRealBurnThroughService(t *testing.T) {
-	// 第一步：找带 libass 的构建，没有就跳过（不假装成功）。
-	burner := deepScanFFmpeg(context.Background(), "")
-	if burner == nil {
-		if quick := selectFFmpeg(context.Background(), ""); quick != nil {
-			if caps := quick.Available(context.Background()); caps.OK && caps.SupportsSubtitlesBurn {
-				burner = quick
-			}
-		}
+	// 第一步：用用户配置的 FFmpeg（应用已改为只用手动配置，没有自动发现）。
+	configured := strings.TrimSpace(os.Getenv("TRANSCRIBE_TEST_FFMPEG"))
+	if configured == "" {
+		t.Skip("未设置 TRANSCRIBE_TEST_FFMPEG（指向完整版 ffmpeg.exe），跳过")
 	}
+	burner := resolveFFmpeg(context.Background(), configured)
 	if burner == nil {
-		t.Skip("本机没有找到支持字幕压制的 FFmpeg 构建")
+		t.Fatalf("配置的 FFmpeg 不可用：%s", configured)
+	}
+	if caps := burner.Available(context.Background()); !caps.OK || !caps.SupportsSubtitlesBurn {
+		t.Skipf("该构建不支持字幕压制：%s", caps.Detail)
 	}
 
 	workDir := t.TempDir()

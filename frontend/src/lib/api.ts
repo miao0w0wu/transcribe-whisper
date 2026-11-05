@@ -8,8 +8,12 @@ import type {
   BurnSubtitlesInput,
   CreateTaskInput,
   Dashboard,
+  DownloadFFmpegInput,
   EnvironmentStatus,
   ExportFormat,
+  FFmpegProgressEvent,
+  FFmpegSource,
+  FFmpegStatus,
   ModelInfo,
   OllamaModelInfo,
   SettingsPatch,
@@ -24,6 +28,10 @@ export type {
   AddRepoModelInput,
   BurnSubtitlesInput,
   CreateTaskInput,
+  DownloadFFmpegInput,
+  FFmpegProgressEvent,
+  FFmpegSource,
+  FFmpegStatus,
   OllamaModelInfo,
   Dashboard,
   EnvironmentStatus,
@@ -185,4 +193,34 @@ export function getEnvironment(): Promise<EnvironmentStatus> {
 /** 打开模型缓存目录 */
 export function openModelFolder(): Promise<void> {
   return invoke<void>('OpenModelFolder', '打开缓存目录');
+}
+
+/** 读取 FFmpeg 安装状态（未配置即「未安装」） */
+export function getFFmpegStatus(): Promise<FFmpegStatus> {
+  return invoke<FFmpegStatus>('GetFFmpegStatus', '读取 FFmpeg 状态');
+}
+
+/** 下载并安装 FFmpeg（进度通过 ffmpeg:progress 事件推送） */
+export function downloadFFmpeg(input: DownloadFFmpegInput): Promise<FFmpegStatus> {
+  return invoke<FFmpegStatus>('DownloadFFmpeg', '下载 FFmpeg', [input]);
+}
+
+/** 手动指定 ffmpeg.exe 路径或它所在的目录 */
+export function setFFmpegPath(path: string): Promise<FFmpegStatus> {
+  return invoke<FFmpegStatus>('SetFFmpegPath', '设置 FFmpeg 路径', [path]);
+}
+
+/** 清除已配置的 FFmpeg 路径 */
+export function clearFFmpegPath(): Promise<FFmpegStatus> {
+  return invoke<FFmpegStatus>('ClearFFmpegPath', '清除 FFmpeg 路径');
+}
+
+/** 选择 FFmpeg 安装目录 */
+export function pickFFmpegDirectory(): Promise<string> {
+  return invoke<string>('PickFFmpegDirectory', '选择 FFmpeg 目录');
+}
+
+/** 选择 ffmpeg.exe 文件 */
+export function pickFFmpegFile(): Promise<string> {
+  return invoke<string>('PickFFmpegFile', '选择 ffmpeg.exe');
 }

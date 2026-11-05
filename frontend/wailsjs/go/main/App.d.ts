@@ -12,9 +12,13 @@ export function CancelModelDownload(arg1:string):Promise<void>;
 
 export function CancelTask(arg1:string):Promise<main.Task>;
 
+export function ClearFFmpegPath():Promise<main.FFmpegStatus>;
+
 export function CreateTask(arg1:main.CreateTaskInput):Promise<main.Task>;
 
 export function DeleteTask(arg1:string):Promise<void>;
+
+export function DownloadFFmpeg(arg1:main.DownloadFFmpegInput):Promise<main.FFmpegStatus>;
 
 export function DownloadModel(arg1:string):Promise<main.ModelInfo>;
 
@@ -23,6 +27,8 @@ export function ExportSubtitles(arg1:string,arg2:string):Promise<string>;
 export function GetDashboard():Promise<main.Dashboard>;
 
 export function GetEnvironment():Promise<main.EnvironmentStatus>;
+
+export function GetFFmpegStatus():Promise<main.FFmpegStatus>;
 
 export function GetSettings():Promise<main.SettingsSnapshot>;
 
@@ -38,6 +44,10 @@ export function PauseTask(arg1:string):Promise<main.Task>;
 
 export function PickDirectory():Promise<string>;
 
+export function PickFFmpegDirectory():Promise<string>;
+
+export function PickFFmpegFile():Promise<string>;
+
 export function PickFile():Promise<string>;
 
 export function RemoveModel(arg1:string):Promise<void>;
@@ -49,6 +59,8 @@ export function RetranslateTask(arg1:string):Promise<main.Task>;
 export function RetryTask(arg1:string):Promise<main.Task>;
 
 export function SaveExport(arg1:string,arg2:string):Promise<string>;
+
+export function SetFFmpegPath(arg1:string):Promise<main.FFmpegStatus>;
 
 export function StartTask(arg1:string):Promise<main.Task>;
 

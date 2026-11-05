@@ -139,15 +139,42 @@ func TestBindingModelLifecycleErrors(t *testing.T) {
 func TestBindingEnvironmentShape(t *testing.T) {
 	app := newFrontendApp(t)
 	status := app.GetEnvironment()
-	// FFmpeg 在本机确实可用，这是构建环境的硬性前提。
+	if status.ModelDir == "" {
+		t.Fatal("模型目录不应为空")
+	}
+	// 应用改为「FFmpeg 完全手动指定」：新装环境没有配置时必须是「未安装」，
+	// 而不是偷偷从 PATH 里认领一个。这里验证未配置时的契约。
+	if status.FFmpegOK {
+		t.Fatalf("未配置 FFmpeg 时不应报告可用: %+v", status)
+	}
+	if status.FFmpegDetail == "" {
+		t.Fatal("未安装时必须给出中文提示")
+	}
+	if status.FFmpegDefaultDir == "" {
+		t.Fatal("应给出默认安装目录，供界面提示用户")
+	}
+	// 默认目录必须落在应用数据目录下。
+	if !strings.Contains(status.FFmpegDefaultDir, "ffmpeg") {
+		t.Fatalf("默认安装目录异常：%s", status.FFmpegDefaultDir)
+	}
+}
+
+// 配置了真实 FFmpeg 后，环境探测应报告可用。
+func TestBindingEnvironmentWithFFmpeg(t *testing.T) {
+	ffmpegPath := strings.TrimSpace(os.Getenv("TRANSCRIBE_TEST_FFMPEG"))
+	if ffmpegPath == "" {
+		t.Skip("未设置 TRANSCRIBE_TEST_FFMPEG，跳过")
+	}
+	app := newFrontendApp(t)
+	if _, err := app.SetFFmpegPath(ffmpegPath); err != nil {
+		t.Fatalf("设置 FFmpeg 路径失败: %v", err)
+	}
+	status := app.GetEnvironment()
 	if !status.FFmpegOK {
-		t.Fatalf("本机 FFmpeg 应当可用: %+v", status)
+		t.Fatalf("配置后应报告可用: %+v", status)
 	}
 	if status.FFmpegPath == "" {
 		t.Fatal("FFmpeg 可用时必须给出路径")
-	}
-	if status.ModelDir == "" {
-		t.Fatal("模型目录不应为空")
 	}
 }
 

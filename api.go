@@ -884,21 +884,22 @@ func (a *App) GetEnvironment() EnvironmentStatus {
 
 	status := EnvironmentStatus{ModelDir: settings.ModelDir, GPU: detectGPU()}
 
-	ffmpegPath := settings.FFmpegPath
-	if ffmpegPath == "" {
-		ffmpegPath = "ffmpeg"
-	}
+	// FFmpeg 只认用户显式配置：没配置就是「未安装」，不再回退到 PATH 查找。
 	a.mu.RLock()
 	ffmpeg := a.media
+	dataDir := a.dataDir
 	a.mu.RUnlock()
+	status.FFmpegDefaultDir = defaultFFmpegDir(dataDir)
 	if ffmpeg != nil {
 		caps := ffmpeg.Available(ctx)
 		status.FFmpegOK = caps.OK
 		status.FFmpegPath = caps.Path
 		status.FFmpegDetail = strings.TrimSpace(caps.Version + " " + caps.Detail)
 		status.FfmpegSubtitle = caps.SupportsSubtitlesBurn
+	} else if strings.TrimSpace(settings.FFmpegPath) == "" {
+		status.FFmpegDetail = "尚未安装 FFmpeg。请到设置页下载完整版，或选择本机已有的 ffmpeg.exe。"
 	} else {
-		status.FFmpegDetail = "未找到 FFmpeg，请安装后重启应用或在设置中指定路径"
+		status.FFmpegDetail = "配置的 FFmpeg 不可用（" + settings.FFmpegPath + "），请重新选择或重新下载。"
 	}
 
 	pythonPath := settings.PythonPath
@@ -929,12 +930,6 @@ func (a *App) GetEnvironment() EnvironmentStatus {
 			status.PythonDetail = detail
 		}
 	}
-	if status.FFmpegPath == "" && status.FFmpegOK {
-		if resolved, ok := ensureExecutable("ffmpeg"); ok {
-			status.FFmpegPath = resolved
-		}
-	}
-
 	// transformers 引擎（cohere 等模型）与 faster-whisper 的依赖不同，单独探测。
 	transformersEngine := asr.NewTransformersEngine()
 	transformersEngine.PythonPath = settings.PythonPath

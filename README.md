@@ -13,10 +13,12 @@
 ```
 
 - 工作台：任务进度、字幕表格（搜索、筛选、行内编辑）、状态徽章，操作按状态启用（暂停 / 恢复 / 取消 / 重试 / 重新翻译 / 翻译待译条目）；导出区下方可将字幕压制进视频另存为 MP4。
+- **FFmpeg 完全手动**：设置页可一键下载完整版（gyan.dev 主源 + BtbN 备选，均带 libass 可压制字幕），也可选择本机已有的 `ffmpeg.exe`；**不做任何自动发现**。未安装时在新建任务、模型管理与设置页都显示醒目提示与入口。
 - 任务队列：全部任务的进度与生命周期管理，点击进入工作台；应用启动时自动把上次异常退出残留的任务标记为失败。
 - 新建任务：系统文件对话框（`PickFile`）、已安装模型下拉、语言 / 设备 / 精度、是否翻译与 Provider 选择、输出格式。
 - 翻译设置：Ollama（本地，默认）与 OpenAI-compatible（云端，需隐私确认）、**自动识别本机 Ollama 模型并手动选择**、翻译语气（含**露骨**选项，面向成人内容）、术语表（`源术语=译法`，每行一条）、API Key（只显示是否已配置）、Hugging Face 访问令牌（仅受限仓库需要）、连接测试。
 - 模型管理：内置 Systran/faster-whisper 五档模型（tiny/base/small/medium/large-v3）**与 cohere-transcribe-03-2026**；hf-mirror 与 Hugging Face 多镜像自动降级、断点续传、进度事件、取消、删除保护（正在被任务使用的模型不可删除）；**支持自选本地模型目录**（自动识别 CTranslate2 / transformers 格式并校验关键文件）与**按仓库名 / 链接添加可下载模型**；环境探测（FFmpeg / Python / faster-whisper / transformers / GPU）。
+- **绿色版目录结构**：数据目录默认建在**应用所在目录**下的 `transcribe-whisper-data/`（内含任务库、`models/` 与 `ffmpeg/`），整个文件夹拷走即可换机；该目录不可写时（例如装在 Program Files）才回退到用户配置目录，并在日志里说明。
 - 双识别引擎：`faster-whisper`（CTranslate2 格式）与 `transformers`（safetensors 格式，如 cohere）；任务按模型格式自动路由，不看设置里的引擎名。
 - 后端架构：`internal/` 分层（media / asr / translation / modelmanager / repository / exporter / service），Binding 层只做参数校验与结果映射，任务阶段与设置均持久化到 SQLite。
 - 前端架构：`src/views/` 按视图拆分，`src/lib/` 封装 API 与事件订阅；纯浏览器打开时进入只读演示模式，不会崩溃。
@@ -61,8 +63,8 @@ llama-server / Ollama / 云端 API 翻译
 | 桌面宿主 | Go + Wails v2 |
 | 前端 | React + TypeScript + Vite |
 | 数据库 | SQLite（`modernc.org/sqlite`，纯 Go） |
-| 音视频 | FFmpeg（探测 / 提取 / 压制能力检测；自动优先选带 `subtitles` 滤镜的构建） |
-| ASR | faster-whisper（JSON Lines 子进程协议）；FunASR 协议已实现 |
+| 音视频 | FFmpeg（**需手动指定或一键下载完整版**；不做自动发现） |
+| ASR | faster-whisper 与 transformers 双引擎（JSON Lines 子进程协议） |
 | 翻译 | Ollama、OpenAI-compatible API（`/chat/completions`） |
 
 ```text
@@ -118,8 +120,13 @@ $env:TRANSCRIBE_E2E_TRANSLATE='1'
 $env:TRANSCRIBE_E2E_OLLAMA_MODEL='qwen2.5:7b'
 go test -run TestRealFullPipeline -v ./
 
-# 字幕压制（自动发现带 libass 的 FFmpeg，无需环境变量）
+# 字幕压制（需要你手动指定一个带 libass 的 ffmpeg.exe）
+$env:TRANSCRIBE_TEST_FFMPEG='D:\path\to\ffmpeg.exe'
 go test -run TestRealBurnSubtitle -v ./
+
+# FFmpeg 真实下载安装（约 115MB，会写到临时目录）
+$env:FFMPEGSETUP_REAL='1'
+go test -run TestRealInstall -v ./internal/ffmpegsetup/
 
 # cohere-transcribe（transformers 引擎，需先下载模型与装好 torch/transformers）
 $env:TRANSCRIBE_E2E_COHERE='1'

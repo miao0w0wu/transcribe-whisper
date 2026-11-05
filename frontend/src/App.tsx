@@ -264,7 +264,14 @@ function App() {
           />
         ) : null}
 
-        {view === 'new-task' ? <NewTask demo={demo} onCreated={handleCreated} onCancel={() => setView('workspace')} /> : null}
+        {view === 'new-task' ? (
+          <NewTask
+            demo={demo}
+            onCreated={handleCreated}
+            onCancel={() => setView('workspace')}
+            onOpenSettings={() => setView('settings')}
+          />
+        ) : null}
 
         {view === 'settings' ? <SettingsView demo={demo} /> : null}
 

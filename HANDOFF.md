@@ -27,7 +27,9 @@
 | 包 | 职责 |
 |---|---|
 | `internal/media` | FFmpeg 探测（版本 / `subtitles`、`drawtext` 滤镜能力）、ffprobe 元数据、16kHz wav 提取、字幕压制（`Burn`） |
-| `ffmpeg_select.go`（根包） | FFmpeg 自动发现：显式配置 > PATH 与常见安装目录探测（优先支持压制的构建）> 启动时限时深度扫描升级，成功后写回设置 |
+| `ffmpeg_select.go`（根包） | FFmpeg 解析：**只认用户手动配置的路径**，未配置就返回 nil（界面据此提示未安装）；不做任何自动发现 |
+| `internal/ffmpegsetup` | FFmpeg 下载安装：gyan.dev 主源 + BtbN 备选，只把 `ffmpeg.exe`/`ffprobe.exe` 解压到 `<数据目录>/ffmpeg/bin/` |
+| `appdirs.go`（根包） | 绿色版目录：数据目录默认在**应用所在目录**下的 `transcribe-whisper-data/`（含任务库、`models/`、`ffmpeg/`），不可写时回退用户配置目录 |
 | `internal/asr` | 两套 JSON Lines 子进程引擎：`faster-whisper`（CTranslate2）与 `transformers`（safetensors，如 cohere）；Python 脚本内嵌（`internal/asr/assets/*.py`）并释放到缓存目录 |
 | `internal/translation` | `Provider` 统一接口、Ollama（`/api/chat` + `/api/tags` 本机模型列表）与 OpenAI-compatible（`/chat/completions`）、批处理流水线（分批、指数退避重试、缺失补批、SHA-256 缓存、术语表注入与后置校验、`BatchError` 聚合） |
 | `internal/modelmanager` | 六档模型清单（five Whisper + cohere，实测字节数）、hf-mirror→HuggingFace 多镜像降级、HTTP Range 断点续传（`.part`）、进度节流、取消、删除保护、自选本地模型（`local.go`）、按链接添加仓库（`repo.go`） |
@@ -35,7 +37,7 @@
 | `internal/exporter` | SRT / VTT / TXT / JSON / 双语 SRT 纯函数导出器 |
 | `internal/service` | 任务调度：并发槽位队列、阶段推进（提取→识别→翻译）、暂停 / 恢复 / 取消 / 重试 / 重新翻译、Wails 事件推送 |
 
-### Wails Binding（29 个，已与前端一一对齐）
+### Wails Binding（35 个，已与前端一一对齐）
 
 | 方法 | 用途 |
 |---|---|
@@ -58,11 +60,16 @@
 | `TestTranslationProvider` | 发一条测试字幕验证连通性 |
 | `GetEnvironment` | FFmpeg / Python / faster-whisper / transformers / GPU 探测 |
 | `PickFile` | 系统文件选择框（新建任务用） |
+| `GetFFmpegStatus` | FFmpeg 安装状态（未配置即「未安装」）+ 默认安装目录 + 下载源 |
+| `DownloadFFmpeg(input)` | 下载并安装完整版 FFmpeg；完成后自动写回设置并重建媒体依赖 |
+| `SetFFmpegPath / ClearFFmpegPath` | 手动指定 / 清除 ffmpeg.exe 路径（传目录会自动找 `bin/ffmpeg.exe`） |
+| `PickFFmpegDirectory / PickFFmpegFile` | 选择 FFmpeg 安装目录 / ffmpeg.exe |
 
 ### Wails 事件
 
 - `task:progress`：`TaskProgressEvent { taskId, status, stage, progress, currentStage, message, error }`
 - `model:progress`：`ModelProgressEventPayload { modelId, progress, message, done, error }`
+- `ffmpeg:progress`：`FFmpegProgressPayload { progress, message, done, error, path }`
 
 ### 任务状态机
 
@@ -128,7 +135,8 @@ wails build            # build/bin/transcribe-whisper.exe
 3. **faster-whisper 加载本地模型目录**需要 `config.json`、`model.bin`、`tokenizer.json`、`vocabulary.txt`（large-v3 是 `vocabulary.json`）**全部齐全**，否则报 `Cannot load the vocabulary`。所以清单里四个文件都是 Required。
 4. **测试必须隔离用户目录**：`NewApp()` 会把数据目录指向系统临时目录（`shutdown` 时清理）。不要在 `NewApp()` 里回退到 `os.UserConfigDir()`。
 5. **本机网络**：`huggingface.co` 不可达，`hf-mirror.com` 可达；模型下载默认镜像顺序必须是 hf-mirror 优先。
-6. **FFmpeg 构建差异与本机路径**：本机在用的 `ffmpeg 7.1.1`（WhisperJAV）**没有** `subtitles` 滤镜，而 `ffmpeg 8.1.2-full`（`D:\AI\video tools\jasna-windows-0.10.0\tools\ffmpeg.exe`）有。`ffmpeg_select.go` 已实现自动发现：显式配置优先 > PATH 与常见目录探测（优先支持压制的构建）> 启动时限时深度扫描升级，成功后写回 `settings.FFmpegPath`。
+6. **FFmpeg 完全手动，不再自动发现**。早期的「PATH + 常见目录 + 整盘深度扫描」已全部删除：用户不知道自己实际在用哪个构建、启动时间不可控、还可能出现「借用了某个工具目录、那个工具一删就失效」。现在未配置就是 nil，界面提示「未安装」并给下载入口。`TestRealBurnSubtitle` 等真实用例改读 `TRANSCRIBE_TEST_FFMPEG` 环境变量。
+6b. **数据目录在应用旁边**（绿色版）：`transcribe-whisper-data/` 与 exe 同级，内含任务库、`models/`、`ffmpeg/`。`portableDataDir()` 会实际写探针文件验证可写性，装在 Program Files 那种无写权限的位置时回退用户配置目录并写日志 —— 不要改成静默失败。
 7. **滤镜图转义只能单级**：`subtitles='C\:/path/x.srt'` 正确，两级（`subtitles='C\\:/...'`）实测 `exit=-22 Invalid argument`。改 `escapeFilterValue` 前先用命令行 A/B 验证，别靠推测。
 8. **`NormalizeModelID` 只「宽进」不保证等于清单 ID**。`viethang/cohere-transcribe-03-2026` 会归一化成 `cohere-transcribe-03-2026`，而清单 ID 是 `cohere-transcribe`。所有查找必须走 `findInCatalog`（同时比 ID、Repo 与归一化结果），不要用归一化输出做等值判断 —— `DownloadModel` 曾因此报「未知的模型」。
 9. **cohere 官方仓库是 gated（403）**。`CohereLabs/cohere-transcribe-03-2026` 的 `gated` 为 `auto`，hf-mirror 的 resolve 直接 403，镜像站无法代为放行。清单因此指向内容完全一致的公开副本 `viethang/cohere-transcribe-03-2026`（文件与字节数逐一对齐，含中文在内的 14 语言）。别把清单改回官方仓库名。
