@@ -1,13 +1,19 @@
 # 构建产物
 build/bin
 build/windows/installer/*.exe
+build/windows/installer/tmp
 frontend/dist
 node_modules
 
 # 本地临时目录（构建/验证时的中间产物）
 .gotmp
 *.exe
+*.part
 !build/bin/transcribe-whisper.exe
+
+# 工具生成文件与演示材料
+*.md5
+*.pptx
 
 # 编辑器与系统文件
 .vscode
