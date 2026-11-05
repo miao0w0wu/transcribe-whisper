@@ -516,6 +516,34 @@ func (t *Translator) translateBatch(ctx context.Context, batch []Item) batchResu
 			if len(acc.order) > 0 {
 				return acc
 			}
+			// 解码循环：整批被 Ollama 中止。拆成两半分别重试，把肇事条目
+			// 隔离出去——一条烂字幕不该让同批另外 19 条一起失败。
+			// 递归深度由 len(batch) 收敛，拆到单条即停止。
+			if isRepeatLoopError(err) && len(batch) > 1 {
+				mid := len(batch) / 2
+				left := t.translateBatch(ctx, batch[:mid])
+				right := t.translateBatch(ctx, batch[mid:])
+				merged := batchResult{choices: make(map[string]Choice, len(batch))}
+				for _, part := range []batchResult{left, right} {
+					for _, id := range part.order {
+						if c, ok := part.choices[id]; ok {
+							if _, dup := merged.choices[id]; dup {
+								continue
+							}
+							merged.choices[id] = c
+							merged.order = append(merged.order, id)
+						}
+					}
+				}
+				if len(merged.order) == 0 {
+					if left.err != nil {
+						merged.err = left.err
+					} else {
+						merged.err = right.err
+					}
+				}
+				return merged
+			}
 			return batchResult{err: err}
 		}
 		if ctx.Err() != nil {
@@ -536,6 +564,20 @@ func (t *Translator) translateBatch(ctx context.Context, batch []Item) batchResu
 		return acc
 	}
 	return batchResult{err: lastErr}
+}
+
+// isRepeatLoopError 判断错误是否为「模型解码陷入重复循环被中止」。
+//
+// 这类错误由 Ollama 以 HTTP 500 + token repeat limit 返回，特征词稳定，
+// 用错误文本匹配即可，不需要在 Provider 与流水线之间再加一层错误码。
+func isRepeatLoopError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "重复循环") ||
+		strings.Contains(msg, "token repeat limit") ||
+		strings.Contains(msg, "prediction aborted")
 }
 
 // missingItems 返回 batch 里还没有译文的条目。

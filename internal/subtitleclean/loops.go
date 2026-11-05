@@ -21,6 +21,19 @@ const (
 	loopMinSpanLen = 20
 	// loopKeepRepeat 是折叠后保留的重复次数，保留一点真实感叹语气。
 	loopKeepRepeat = 2
+
+	// loopPhraseMaxLen 是「整句级重复单元」的最大长度（按 rune 计）。
+	//
+	// Whisper 在噪声段跑飞时会整句重复："I don't give much. " ×60、
+	// "Ai, que monte. " ×70。这类单元远超 4 个 rune，只靠上面的短单元
+	// 扫描折叠不掉，会原样送进翻译层——实测会让专业翻译模型跟着陷入循环，
+	// Ollama 直接以 500「token repeat limit reached」中止整批。
+	loopPhraseMaxLen = 40
+	// loopPhraseMinSpanLen 是整句级循环所需的重复段最短总长。
+	//
+	// 取 60 而不是 20，是为了把「真的重复说了几遍同一句台词」和
+	// 「解码退化」区分开：正常对白不会把同一句话重复到 60 个字符以上。
+	loopPhraseMinSpanLen = 60
 )
 
 // CollapseLongLoops 把长循环折叠成保留 2 次重复。
@@ -62,7 +75,8 @@ func CollapseLongLoops(text string) string {
 // longestLoopAt 判断从 start 开始是否存在满足条件的长循环。
 //
 // 返回重复单元长度、重复次数与是否命中；命中时 span 覆盖 unitLen*repeat 个 rune。
-// 单元长度从短到长尝试，命中即返回，保证 "あ"×429 这类单字符循环优先折叠。
+// 先按短单元（1..4 rune）扫描，命中即返回，保证 "あ"×429 这类单字符循环
+// 优先折叠；短单元无命中时再尝试整句级重复（见 loopPhraseMaxLen）。
 func longestLoopAt(runes []rune, start int) (unitLen int, repeat int, ok bool) {
 	remaining := len(runes) - start
 	for ul := loopUnitMinLen; ul <= loopUnitMaxLen; ul++ {
@@ -74,6 +88,21 @@ func longestLoopAt(runes []rune, start int) (unitLen int, repeat int, ok bool) {
 			continue
 		}
 		if ul*rep < loopMinSpanLen {
+			continue
+		}
+		return ul, rep, true
+	}
+
+	// 整句级重复：单元更长，需要更大的 span 阈值才判定为循环。
+	for ul := loopUnitMaxLen + 1; ul <= loopPhraseMaxLen; ul++ {
+		if remaining < ul*2 {
+			break
+		}
+		rep := countRepeats(runes, start, ul)
+		if rep < 2 {
+			continue
+		}
+		if ul*rep < loopPhraseMinSpanLen {
 			continue
 		}
 		return ul, rep, true

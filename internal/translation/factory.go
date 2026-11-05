@@ -24,6 +24,9 @@ type Config struct {
 	APIKey string
 	// Model 是模型名称。留空时按种类取默认值。
 	Model string
+	// KeepThinking 为 true 时保留推理模型的思考过程（默认 false = 关闭）。
+	// 批量字幕翻译不需要 reasoning，而 reasoning 会吃光输出预算并导致超时。
+	KeepThinking bool
 }
 
 // normalizeKind 把用户输入的 Kind 归一化成标准值。
@@ -48,10 +51,11 @@ func resolveConfig(cfg Config) (Config, error) {
 		}
 	}
 	out := Config{
-		Kind:    kind,
-		BaseURL: strings.TrimSpace(cfg.BaseURL),
-		APIKey:  strings.TrimSpace(cfg.APIKey),
-		Model:   strings.TrimSpace(cfg.Model),
+		Kind:         kind,
+		BaseURL:      strings.TrimSpace(cfg.BaseURL),
+		APIKey:       strings.TrimSpace(cfg.APIKey),
+		Model:        strings.TrimSpace(cfg.Model),
+		KeepThinking: cfg.KeepThinking,
 	}
 	switch kind {
 	case KindOllama:
@@ -101,10 +105,10 @@ func Describe(config Config) []ProviderDescription {
 		Available: resolved.Kind == KindOllama,
 		Detail:    "本地 Ollama 服务，完全离线运行；本地模型务必把并发设为 1，避免批次互相拖慢。",
 		Options: []ProviderOption{
-			{Name: "qwen2.5:7b-instruct", Kind: KindOllama, Local: true, Description: "默认推荐，中文翻译与术语一致性较好"},
-			{Name: "qwen2.5:14b-instruct", Kind: KindOllama, Local: true, Description: "质量更高，需要更大显存"},
+			{Name: "translategemma:12b", Kind: KindOllama, Local: true, Description: "专业翻译模型，质量最好；需约 8 GB 显存"},
+			{Name: "translategemma:4b", Kind: KindOllama, Local: true, Description: "专业翻译模型，速度快；偶有漏译半句，长片建议用 12b"},
+			{Name: "qwen2.5:7b-instruct", Kind: KindOllama, Local: true, Description: "通用模型，中文语感自然、不漏句；术语一致性较好"},
 			{Name: "qwen2.5:3b-instruct", Kind: KindOllama, Local: true, Description: "体积小、速度快，适合长视频粗翻"},
-			{Name: "llama3.1:8b-instruct", Kind: KindOllama, Local: true, Description: "英文语感自然"},
 		},
 	})
 
@@ -160,8 +164,9 @@ func New(config Config) (Provider, error) {
 	switch resolved.Kind {
 	case KindOllama:
 		return NewOllamaProvider(OllamaConfig{
-			BaseURL: resolved.BaseURL,
-			Model:   resolved.Model,
+			BaseURL:      resolved.BaseURL,
+			Model:        resolved.Model,
+			KeepThinking: resolved.KeepThinking,
 		}), nil
 	case KindOpenAI:
 		return NewOpenAICompatibleProvider(OpenAICompatibleConfig{
@@ -183,9 +188,10 @@ func NewWithClient(config Config, client *http.Client) (Provider, error) {
 	switch resolved.Kind {
 	case KindOllama:
 		return NewOllamaProvider(OllamaConfig{
-			BaseURL:    resolved.BaseURL,
-			Model:      resolved.Model,
-			HTTPClient: client,
+			BaseURL:      resolved.BaseURL,
+			Model:        resolved.Model,
+			HTTPClient:   client,
+			KeepThinking: resolved.KeepThinking,
 		}), nil
 	case KindOpenAI:
 		return NewOpenAICompatibleProvider(OpenAICompatibleConfig{

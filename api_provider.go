@@ -29,6 +29,9 @@ func newTranslationClient(settings repository.SettingsRecord) (*providerTester, 
 		BaseURL: settings.TranslationEndpoint,
 		APIKey:  settings.TranslationAPIKey,
 		Model:   settings.TranslationModel,
+		// 测试连接时同样关闭思考：推理模型会把 20 秒预算全花在 reasoning 上，
+		// 用户看到的只会是「context deadline exceeded」，而不是真正的问题所在。
+		KeepThinking: false,
 	}, nil)
 	if err != nil {
 		return nil, err
